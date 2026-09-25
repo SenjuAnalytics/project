@@ -326,23 +326,11 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         (uint256 mc, bool evaluable) = _marketCapUsd(token, tokenPriceInAsset, asset);
         if (!evaluable) return;
 
-        bool live = activeBattleOf(token) != 0;
         uint48 nowTs = uint48(block.timestamp);
 
-        // 3. While a battle is live, dropping below the threshold disqualifies the token. The battle keeps
-        //    running and the finalize step decides the winner; no funds move here.
-        if (live) {
-            if (mc < MC_THRESHOLD_USD) {
-                e.disqualified = true;
-                e.disqualifiedAt = nowTs;
-                emit TokenDisqualified(token, true, mc, nowTs);
-            }
-            return;
-        }
-
-        // 4. Not in a battle: run the timer / eligibility / pre-eligibility-DQ state machine.
+        // Timer not started yet: only a close >= threshold starts the 24h timer. A below-threshold close does nothing
+        // (the token has never qualified, so there is nothing to disqualify; its stuck pending is handled by releaseExpiredPending).
         if (e.firstCloseAt == 0) {
-            // Start the 24h timer on the first settled close that reaches the threshold.
             if (mc >= MC_THRESHOLD_USD) {
                 e.firstCloseAt = nowTs;
                 emit EligibilityTimerStarted(token, mc, nowTs);
@@ -350,22 +338,28 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
             return;
         }
 
-        if (!e.eligible) {
-            if (mc < MC_THRESHOLD_USD) {
-                // Dropped below threshold before becoming eligible -> permanent disqualification (spec §4.1).
-                e.disqualified = true;
-                e.disqualifiedAt = nowTs;
-                emit TokenDisqualified(token, false, mc, nowTs);
-                // Drain the battle share this token accrued while never eligible straight to the treasury, so
-                // funds are never stranded on a token that can now never battle (spec §4.1). Flags are already
-                // set, and the curve/hook wrap this call in try/catch, so trading can never be blocked by it.
+        // Continuous-maintenance rule: once the timer has started, ANY settled close below the threshold permanently
+        // disqualifies the token — while ramping, eligible-and-queued, reserved for a battle, or in a live battle.
+        if (mc < MC_THRESHOLD_USD) {
+            // committed == the token's pending pot has already moved into a battle pot: reserved (pre-start) OR live,
+            // i.e. block.timestamp is before the scheduled battle's end. Mirrors feeBucketOf's window.
+            Schedule memory schedule = _schedules[token];
+            bool committed = schedule.startTime != 0 && block.timestamp < uint256(schedule.startTime) + BATTLE_DURATION;
+            e.disqualified = true;
+            e.disqualifiedAt = nowTs;
+            emit TokenDisqualified(token, committed, mc, nowTs);
+            if (!committed) {
+                // No battle pot in play: release the token's pending battle pot to the treasury (idempotent, no-op if zero).
                 _drainPendingToTreasury(token, asset);
-                return;
             }
-            if (block.timestamp >= uint256(e.firstCloseAt) + ELIGIBILITY_WINDOW) {
-                e.eligible = true;
-                emit TokenEligible(token, nowTs);
-            }
+            // committed: leave the pot in play; finalizeBattle/_resolveOutcome makes the disqualified token lose.
+            return;
+        }
+
+        // mc >= threshold: latch eligibility once the 24h window has fully elapsed.
+        if (!e.eligible && block.timestamp >= uint256(e.firstCloseAt) + ELIGIBILITY_WINDOW) {
+            e.eligible = true;
+            emit TokenEligible(token, nowTs);
         }
     }
 
