@@ -5,8 +5,8 @@
 //   • Battle pots — funded by the 15% competition share of a token's trading fees.
 //       - pending: until a token's battle is booked, 70% of that share waits in `pendingBattlePot(token, asset)`.
 //                  It seeds the pot at booking. It goes to the treasury instead if the token is disqualified
-//                  before it qualifies, or starts no eligibility timer within 30 days of launch. It is never
-//                  paid to the league.
+//                  before its battle is booked, or starts no eligibility timer within 30 days of launch. It is
+//                  never paid to the league.
 //       - open:    the pot of a battle that is booked, live or settling, from `getBattle(id).pot`. From the
 //                  booking until the 24 hours end, the whole 15% goes in. The keeper finalizes the battle once
 //                  its challenge window closes, and the pot goes to the buyback.

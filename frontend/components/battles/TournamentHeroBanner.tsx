@@ -14,7 +14,7 @@ interface TournamentHeroBannerProps {
 }
 
 const RULES = [
-  { icon: '✅', label: '$100k market cap', text: 'held for 24 hours to qualify' },
+  { icon: '✅', label: '$100k market cap', text: 'held for 24 hours, then kept through the battle' },
   { icon: '🔗', label: 'Same pair asset', text: 'ETH against ETH, USDG against USDG' },
   { icon: '📊', label: 'Score', text: '70% qualified volume, 30% unique buyers' },
   { icon: '🔥', label: 'Winner takes the pot', text: 'and it buys back and burns that token' },

@@ -22,13 +22,13 @@ interface IQualyraCompetitionVault {
     function activeBattleOf(address token) external view returns (uint256);
     /// @notice Battle the fees `token` earns right now belong to, or zero. The hook tags every swap's fees with it.
     function feeBucketOf(address token) external view returns (uint256);
-    /// @notice Evaluate a token's market-cap eligibility at the close of a settled trade.
-    /// @dev Callable only by the token's bonding curve (`factory.curveOf(token)`) or the hook (`factory.hook()`).
-    ///      Internally fail-safe: any oracle problem is a no-op and it never reverts for an authorised caller.
+    /// @notice Evaluate a token's market-cap eligibility after a swap on its pool.
+    /// @dev Callable only by the hook (`factory.hook()`). Internally fail-safe: any oracle problem is a no-op and it
+    ///      never reverts for the hook.
     /// @param token The launch token that was traded.
-    /// @param tokenPriceInAsset Marginal price of one whole (1e18) token, expressed in pair-asset units.
+    /// @param tokenPrice18 Time-weighted price of one whole token in whole pair asset units, 18-decimal fixed point.
     /// @param asset The pair asset (address(0) for native ETH); used to resolve the USD price feed.
-    function onTradeClose(address token, uint256 tokenPriceInAsset, address asset) external;
+    function onTradeClose(address token, uint256 tokenPrice18, address asset) external;
     function isBattlePotOpen(uint256 battleId, address token, address asset) external view returns (bool);
     /// @notice Whether a token has already used its one lifetime battle (also selects fee-routing Phase 3).
     function hasBattled(address token) external view returns (bool);

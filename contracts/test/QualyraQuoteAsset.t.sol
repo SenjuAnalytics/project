@@ -40,6 +40,12 @@ contract QualyraQuoteAssetTest is LaunchTestBase {
         factory.setQuoteAsset(address(token), USDG_PHANTOM, USDG_THRESHOLD, 5);
     }
 
+    function test_setQuoteAsset_revertsWhenDecimalsAboveCeiling() public {
+        MockERC20 token = new MockERC20("ThirtySeven", "T37", 37);
+        vm.expectRevert(QualyraFactory.QuoteAssetDecimalsTooHigh.selector);
+        factory.setQuoteAsset(address(token), USDG_PHANTOM, USDG_THRESHOLD, 37);
+    }
+
     function test_setQuoteAsset_revertsWhenDecimalsUnavailable() public {
         // Has code, but no decimals() to read -> must never enter service.
         NoDecimalsToken token = new NoDecimalsToken();

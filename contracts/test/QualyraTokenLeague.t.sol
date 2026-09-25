@@ -404,8 +404,13 @@ contract QualyraTokenLeagueTest is CompetitionTestBase {
         uint256 start = _nextMidnight();
         uint256 battleId = _scheduleBattle(address(tokenA), address(tokenB), start);
         vm.warp(start + 1 hours);
-        _disqualifyLive(address(tokenA));
-        _disqualifyLive(address(tokenB));
+        _reportBelowThreshold(address(tokenA));
+        _reportBelowThreshold(address(tokenB));
+        skip(competition.DQ_DWELL());
+        _reportBelowThreshold(address(tokenA));
+        // Confirmed a few minutes apart, but both drops are dated to the same second.
+        skip(5 minutes);
+        _reportBelowThreshold(address(tokenB));
 
         vm.warp(start + 24 hours);
         _expectInvalidResult(battleId, QualyraCompetitionVault.Outcome.DisqualifiedA, 0, 0);
@@ -501,13 +506,19 @@ contract QualyraTokenLeagueTest is CompetitionTestBase {
         competition.cancelBattle(battleId + 1);
     }
 
-    /// @dev A close below $100k while the battle is live, as the pool hook would report it.
+    /// @dev The pool hook reports a market cap below $100k, then again once DQ_DWELL has passed.
     function _disqualifyLive(address token) internal {
+        _reportBelowThreshold(token);
+        skip(competition.DQ_DWELL());
+        _reportBelowThreshold(token);
+        (,, bool disqualified,) = competition.eligibilityOf(token);
+        assertTrue(disqualified);
+    }
+
+    function _reportBelowThreshold(address token) internal {
         _refreshEligibilityFeeds();
         vm.prank(factory.hook());
         competition.onTradeClose(token, 1, address(0));
-        (,, bool disqualified,) = competition.eligibilityOf(token);
-        assertTrue(disqualified);
     }
 
     function _expectInvalidResult(
@@ -663,14 +674,15 @@ contract QualyraTokenLeagueTest is CompetitionTestBase {
         _swap(keyA, bob, true, -1 ether, 1 ether);
         _swap(keyB, bob, true, -1 ether, 1 ether);
 
-        address src = factory.hook();
-        _refreshEligibilityFeeds();
-        vm.prank(src);
-        competition.onTradeClose(address(tokenA), 1, address(0));
-        skip(1 hours);
-        _refreshEligibilityFeeds();
-        vm.prank(src);
-        competition.onTradeClose(address(tokenB), 1, address(0));
+        // tokenA goes below the floor first; tokenB follows 20 minutes later, so its disqualification is confirmed
+        // before tokenA's but still dated after it.
+        _reportBelowThreshold(address(tokenA));
+        skip(20 minutes);
+        _reportBelowThreshold(address(tokenB));
+        skip(competition.DQ_DWELL());
+        _reportBelowThreshold(address(tokenB));
+        skip(1 minutes);
+        _reportBelowThreshold(address(tokenA));
 
         (,, bool dqA, uint48 atA) = competition.eligibilityOf(address(tokenA));
         (,, bool dqB, uint48 atB) = competition.eligibilityOf(address(tokenB));
@@ -708,11 +720,11 @@ contract QualyraTokenLeagueTest is CompetitionTestBase {
 
         uint256 treasuryBefore = feeVault.treasuryBalance(address(0));
 
-        // Market cap collapses below $100k on a settled close: tokenC is permanently disqualified (§4.1) and its
-        // pending pot is drained to the treasury in the same call.
-        _refreshEligibilityFeeds();
-        vm.prank(src);
-        competition.onTradeClose(address(tokenC), 1, address(0));
+        // Market cap collapses below $100k and stays there for DQ_DWELL: tokenC is permanently disqualified (§4.1)
+        // and its pending pot is drained to the treasury in the same call.
+        _reportBelowThreshold(address(tokenC));
+        skip(competition.DQ_DWELL());
+        _reportBelowThreshold(address(tokenC));
 
         (,, bool dq,) = competition.eligibilityOf(address(tokenC));
         assertTrue(dq, "permanently disqualified");

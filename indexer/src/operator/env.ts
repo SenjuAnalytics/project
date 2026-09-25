@@ -19,7 +19,7 @@ const INDEXER_ROOT = resolve(__dirname, "..", "..");
 export interface ServiceEnv {
   /** Wallet holding the vault's operator role: books battles, posts results and winners. */
   operatorKey?: Hex;
-  /** Wallet with no role: pays for finalize, buyback tranches, sweeps and expiry releases. */
+  /** Wallet with no role: pays for finalize, buyback tranches, eligibility checks, sweeps and expiry releases. */
   keeperKey?: Hex;
   /** Slack or Discord style webhook; alerts are only logged when unset. */
   alertWebhookUrl?: string;
@@ -33,6 +33,8 @@ export interface ServiceEnv {
   minBookingLeadSeconds: number;
   /** Minute of the UTC day of the daily sweep. */
   sweepMinuteUtc: number;
+  /** A token whose eligibility matters and that went this long without a swap gets its check run by the keeper. */
+  pokeQuietSeconds: number;
   /** Where the service remembers what it already did or reported. */
   statePath: string;
 }
@@ -111,6 +113,7 @@ export function readServiceEnv(args: { dryRun: boolean }): ServiceEnv {
     bookingHourUtc: readInt("OPERATOR_BOOKING_HOUR_UTC", 18, 0, 23),
     minBookingLeadSeconds: readInt("OPERATOR_MIN_BOOKING_LEAD_SECONDS", 3600, 0, 86_399),
     sweepMinuteUtc: readMinuteOfDay("OPERATOR_SWEEP_AT_UTC", "23:40"),
+    pokeQuietSeconds: readInt("OPERATOR_POKE_QUIET_SECONDS", 600, 60, 86_400),
     statePath: process.env.OPERATOR_STATE_PATH?.trim() || resolve(INDEXER_ROOT, "out", "operator-state.json"),
   };
 }

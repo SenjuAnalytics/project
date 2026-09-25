@@ -17,6 +17,7 @@ import {
   nextBattleStart,
   pairByMarketCap,
   sweepDue,
+  tokensToPoke,
   tokensToSweep,
   tranchesDue,
   weeksAwaitingWinners,
@@ -116,23 +117,48 @@ const token = (over = {}) => ({
   eligible: true,
   disqualified: false,
   hasBattled: false,
+  belowThresholdSince: 0,
+  averageReady: true,
+  lastSwapAt: 0,
   parkedFees: 0n,
   pendingPot: 0n,
   pendingExpired: false,
   ...over,
 });
 
-test("only eligible tokens that never battled can be booked", () => {
+test("only eligible tokens that never battled and hold the threshold can be booked", () => {
   const list = [
     token({ token: "0x1" }),
     token({ token: "0x2", eligible: false }),
     token({ token: "0x3", disqualified: true }),
     token({ token: "0x4", hasBattled: true }),
+    token({ token: "0x5", belowThresholdSince: MIDNIGHT }),
   ];
   assert.deepEqual(
     bookableTokens(list).map(t => t.token),
     ["0x1"],
   );
+});
+
+test("the keeper checks quiet tokens where timing matters: in a drop, in a battle, bookable while booking is open", () => {
+  const now = MIDNIGHT + 20 * 3600;
+  const list = [
+    token({ token: "0x1", belowThresholdSince: now - 600 }),
+    token({ token: "0x2", hasBattled: true }),
+    token({ token: "0x3" }),
+    token({ token: "0x4", hasBattled: true, belowThresholdSince: now - 900 }),
+    token({ token: "0x5", disqualified: true }),
+    token({ token: "0x6", averageReady: false }),
+    token({ token: "0x7", belowThresholdSince: now - 600, lastSwapAt: now - 60 }),
+  ];
+  // 0x2 is booked for the coming midnight; 0x4 battled and its battle is over, so nothing it does counts any more.
+  const battles = [battle({ tokenA: "0x2", tokenB: "0x9", startTime: MIDNIGHT + DAY })];
+  const pick = opts => tokensToPoke(list, battles, now, { quietSeconds: 600, lastPokeAt: {}, ...opts }).map(t => t.token);
+
+  assert.deepEqual(pick({ bookingOpen: false }), ["0x1", "0x2"]);
+  assert.deepEqual(pick({ bookingOpen: true }), ["0x1", "0x2", "0x3"]);
+  // Poked five minutes ago: not again until it has been quiet for another 600 seconds.
+  assert.deepEqual(pick({ bookingOpen: true, lastPokeAt: { "0x1": now - 300 } }), ["0x2", "0x3"]);
 });
 
 test("pairing: neighbours by market cap, per pair asset, odd one out waits", () => {

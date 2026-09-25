@@ -5,9 +5,10 @@
  *
  *   keeper   (KEEPER_PRIVATE_KEY, no role on any contract)
  *            finalize battles and league weeks once their challenge window is
- *            over, run due buyback tranches, and once a day sweep the fees the
- *            pool hook holds and release pending pots past their expiry. All of
- *            these are permissionless; the keeper only pays the gas.
+ *            over, run due buyback tranches, run the eligibility check of quiet
+ *            tokens where timing matters, and once a day sweep the fees the pool
+ *            hook holds and release pending pots past their expiry. All of these
+ *            are permissionless; the keeper only pays the gas.
  *   operator (OPERATOR_PRIVATE_KEY, the vault's operator role)
  *            post each battle's result and each week's winners from the
  *            deterministic indexer, and book ready tokens for the coming
@@ -44,6 +45,7 @@ import {
   nextBattleStart,
   pairByMarketCap,
   sweepDue,
+  tokensToPoke,
   tokensToSweep,
   tranchesDue,
   weeksAwaitingWinners,
@@ -148,7 +150,12 @@ async function noteVetoes(ctx: ServiceContext, snap: Snapshot): Promise<void> {
   }
 }
 
-async function keeperPass(ctx: ServiceContext, snap: Snapshot, tokens: () => Promise<TokenState[]>): Promise<void> {
+async function keeperPass(
+  ctx: ServiceContext,
+  snap: Snapshot,
+  tokens: () => Promise<TokenState[]>,
+  refresh: () => void,
+): Promise<void> {
   const vault = ctx.resolved.competitionVault;
   if (snap.paused) {
     console.log("[keeper] the vault is paused: finalizing, buybacks and week settlement wait.");
@@ -171,10 +178,36 @@ async function keeperPass(ctx: ServiceContext, snap: Snapshot, tokens: () => Pro
     }
   }
 
+  // Swaps run the eligibility check on their own. Without one, a drop nobody trades through, including one that comes
+  // from the pair asset's dollar price, would go unseen. Checks run while the vault is paused too, like swaps do.
+  await attempt(ctx, "eligibility checks", () => pokeQuietTokens(ctx, snap, tokens, refresh));
+
   // Sweeps only move fees the hook already holds into the vaults; they keep working while the vault is paused.
   if (sweepDue(snap.now, ctx.state.lastSweepDay, ctx.env.sweepMinuteUtc)) {
     await attempt(ctx, "daily sweep", () => dailySweep(ctx, snap, tokens));
   }
+}
+
+async function pokeQuietTokens(
+  ctx: ServiceContext,
+  snap: Snapshot,
+  tokens: () => Promise<TokenState[]>,
+  refresh: () => void,
+): Promise<void> {
+  const due = tokensToPoke(await tokens(), snap.battles, snap.now, {
+    bookingOpen: bookingOpen(snap.now, ctx.env.bookingHourUtc),
+    quietSeconds: ctx.env.pokeQuietSeconds,
+    lastPokeAt: ctx.state.lastPokeAt,
+  });
+  for (const t of due) {
+    const sent = await send(ctx, "keeper", `check the eligibility of ${short(t.token)}`, {
+      address: ctx.resolved.competitionVault, abi: QualyraCompetitionVaultAbi, functionName: "pokeEligibility",
+      args: [t.token],
+    });
+    if (sent) ctx.state.lastPokeAt[t.token.toLowerCase()] = snap.now;
+  }
+  // A check can open a drop, which takes the token off the booking list, so the operator reads the tokens again.
+  if (due.length > 0) refresh();
 }
 
 /** Moves every token's parked fees into the vaults and hands expired pending pots to the treasury. */
@@ -334,9 +367,12 @@ export async function runPass(ctx: ServiceContext, duties: ReadonlySet<Duty>): P
   const snap = await readSnapshot(ctx.client, ctx.resolved, ctx.state);
   let cached: Promise<TokenState[]> | undefined;
   const tokens = () => (cached ??= readTokens(ctx.client, ctx.resolved, ctx.state));
+  const refresh = () => {
+    cached = undefined;
+  };
 
   if (duties.has("operator")) await noteVetoes(ctx, snap);
-  if (duties.has("keeper")) await keeperPass(ctx, snap, tokens);
+  if (duties.has("keeper")) await keeperPass(ctx, snap, tokens, refresh);
   if (duties.has("operator")) await operatorPass(ctx, snap, tokens);
   if (duties.has("watch")) await watchPass(ctx, snap);
 }

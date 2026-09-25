@@ -40,8 +40,8 @@ abstract contract CompetitionTestBase is SystemTestBase {
     ///      the $100k threshold (and stays clear during live-battle swaps) without bespoke per-test math.
     int256 internal constant ELIG_ETH_USD = 1_000_000e8;
     int256 internal constant ELIG_USDG_USD = 1_000_000e8;
-    /// @dev Synthetic per-token price fed to `onTradeClose` when forcing eligibility; large enough that MC
-    ///      clears the threshold for both 18-dec (ETH) and 6-dec (USDG) pair assets.
+    /// @dev Synthetic per-token price fed to `onTradeClose` when forcing eligibility: 0.000001 of the pair asset,
+    ///      as an 18-decimal number. With the high USD prices above it clears the threshold for any pair asset.
     uint256 internal constant ELIG_PRICE = 1e12;
 
     function _deploySystem() internal {

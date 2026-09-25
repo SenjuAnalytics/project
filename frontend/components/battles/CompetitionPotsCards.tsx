@@ -232,8 +232,8 @@ export function BattlePotCard() {
 
         <p style={note}>
           Until its battle is booked, 70% of a token&apos;s competition share waits here and seeds the pot. It goes
-          to the treasury instead if the token is disqualified before qualifying, or hasn&apos;t started qualifying
-          within 30 days of launch.
+          to the treasury instead if the token is disqualified before its battle is booked, or hasn&apos;t started
+          qualifying within 30 days of launch.
         </p>
         <p style={note}>
           Battles run from 00:00 to 24:00 UTC. Once the result clears its 24-hour challenge window the battle settles

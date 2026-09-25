@@ -1,9 +1,9 @@
 'use client'
 
-// Battle eligibility of launched tokens, straight from QualyraCompetitionVault. The vault tracks it on
-// settled trades: the 24-hour timer starts at the first close with a market cap of $100k or more, the token
-// qualifies once the window passes, and a drop below $100k before that disqualifies it for good. Each token
-// gets one battle.
+// Battle eligibility of launched tokens, straight from QualyraCompetitionVault. The pool hook reports the
+// pool's 30-minute average price after each swap: the 24-hour timer starts when the market cap first reaches
+// $100k, the token qualifies once the window passes, and from the timer's start until its battle ends, 30
+// minutes below $100k disqualifies it for good. Each token gets one battle.
 
 import { useMemo } from 'react'
 import { useChainId, useReadContracts } from 'wagmi'

@@ -1,10 +1,54 @@
 # Qualyra Battle Engine — TWAP + Hysteresis Hardening (Design)
 
-> **Status: DESIGN ONLY. No Solidity in `src/` is changed by this document.**
-> This is the implementation plan for making the eligibility/DQ engine resistant to
-> single-trade price manipulation. It is grounded in the current code:
-> `QualyraCompetitionVault.onTradeClose` / `_marketCapUsd`, `QualyraBondingCurve._spotPrice`,
-> and `QualyraHook.afterSwap`.
+> **Status: implemented.** Section 0 describes what was built. Sections 1 to 10 are the original
+> design notes, kept for context; where they differ from section 0, section 0 is what the code does.
+
+---
+
+## 0. What was built
+
+- **Where:** pool phase only (option A in 3.4). `QualyraHook` keeps the average. The bonding curve no
+  longer reports to the vault, and `onTradeClose` accepts the hook only, so a token's timer can start
+  once it trades on its pool and the average is ready.
+- **Price:** the pool's spot price from `slot0` after every swap, buybacks included, as whole pair asset
+  units per whole token in 18-decimal fixed point. Working in whole units keeps the precision the same for
+  every asset: in USDG's own 6-decimal units a token near the $100k line is worth about a hundred units,
+  which left the market cap moving in 1% steps. The hook reads the asset's decimals at registration and the
+  factory accepts 6 to 36. The price a swap leaves behind holds until the next swap, so only the price a
+  block closes at carries forward: a price pushed and restored within one block never enters the average.
+- **Average:** arithmetic, over fixed 30-minute windows aligned to UTC (`TWAP_WINDOW`). The hook keeps
+  the price-time sum of the current window and of the previous one, and the average covers the previous
+  window plus the current one so far, 30 to 60 minutes. A window without swaps is filled with the last
+  price, so a quiet spell never stretches the span. Two storage slots per token; the second only changes
+  when a new window begins. View: `QualyraHook.twapOf(token)`.
+- **Warm-up:** the average starts when the pool is initialized and is ready from the start of the second
+  window after that, 30 to 60 minutes after graduation. Until then the hook doesn't report at all, which
+  the vault treats like any other not-evaluable case.
+- **Threshold:** a single $100k line. The $90k lower band from section 5 was left out: a token could
+  sit at $95k indefinitely, which contradicts the rule that it has to hold $100k.
+- **Dwell:** `DQ_DWELL` is 30 minutes. The first report below $100k opens a drop and records `belowSince`
+  (packed into `Eligibility`, readable through `belowThresholdSince(token)`). A report still below 30
+  minutes after that disqualifies the token, and `disqualifiedAt` is set to `belowSince`. A drop only ends
+  once the market cap has held the threshold for another 30 minutes: a single report above it used to be
+  enough, and pushing the price up for a few minutes around each window boundary kept a token that sat
+  below $100k most of the time alive for hours.
+- **When the rule applies:** from the timer's start until the token's battle is over, so queued and booked
+  tokens included (this also settles open decision 6, sticky eligibility). A token in an open drop can't be
+  booked. After the battle's 24 hours the vault returns before reading the oracle, so the record a result is
+  built from no longer changes, and a drop that had run for 30 minutes by then, with the token still below
+  at its last report, counts even though no trade came along to confirm it. `forcedOutcomeOf(battleId)`
+  gives the outcome that record forces; the indexer reads it instead of recomputing it.
+- **Expiry:** a token that graduates in the last hour before `PENDING_EXPIRY` isn't treated as expired
+  until its average is ready, since its pool can't report before then.
+- **Checks without a trade:** `pokeEligibility(token)` runs the same check on the current average, and
+  anyone can call it. Without it a token nobody trades, or one whose dollar value falls with its pair
+  asset, would never be checked. The operator service's keeper pokes a token in a drop, a booked or live
+  token, and every bookable token while booking is open, once it has gone 10 minutes without a swap.
+- **Pairing:** the operator pairs tokens by the market cap the average implies, not the spot price, so a
+  price pushed just before the booking can't choose the opponent.
+- **Gas**, measured on a 0.1 ETH pool buy with isolated transactions: +8.8k for a token before or during
+  its battle (+11.8k for the first swap of a new window), and 41k less for a token whose battle is over,
+  since the vault now skips the oracle reads for it.
 
 ---
 

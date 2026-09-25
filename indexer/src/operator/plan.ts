@@ -52,6 +52,12 @@ export interface TokenState {
   eligible: boolean;
   disqualified: boolean;
   hasBattled: boolean;
+  /** When its reported market cap went below the $100k threshold, zero while it holds it. */
+  belowThresholdSince: number;
+  /** Whether its pool's 30-minute average is ready (QualyraHook.twapOf). */
+  averageReady: boolean;
+  /** When its pool last traded, unix seconds. */
+  lastSwapAt: number;
   /** Untagged fees the hook holds for the token (trade fee plus creator tax). */
   parkedFees: bigint;
   pendingPot: bigint;
@@ -139,9 +145,44 @@ export function bookingOpen(now: number, bookingHourUtc: number): boolean {
   return now % DAY >= bookingHourUtc * 3600;
 }
 
-/** Tokens the vault would accept in a booking right now. */
+/** Whether the vault would accept the token in a booking right now. A token in a drop below the threshold can't be booked. */
+export function isBookable(t: TokenState): boolean {
+  return t.eligible && !t.disqualified && !t.hasBattled && t.belowThresholdSince === 0;
+}
+
 export function bookableTokens(tokens: TokenState[]): TokenState[] {
-  return tokens.filter(t => t.eligible && !t.disqualified && !t.hasBattled);
+  return tokens.filter(isBookable);
+}
+
+/**
+ * Tokens whose eligibility the keeper should check now (QualyraCompetitionVault.pokeEligibility). Swaps run the check
+ * on their own, so only a token that has gone `quietSeconds` without a swap, and without a poke from this service, is
+ * picked, and only where timing matters: a token in a drop below the threshold, a token booked or in a live battle,
+ * and while booking is open, every token the operator could book.
+ */
+export function tokensToPoke(
+  tokens: TokenState[],
+  battles: BattleState[],
+  now: number,
+  opts: { bookingOpen: boolean; quietSeconds: number; lastPokeAt: Readonly<Record<string, number>> },
+): TokenState[] {
+  const inBattle = new Set<string>();
+  for (const b of battles) {
+    if (b.finalized || now >= b.startTime + BATTLE_DURATION) continue;
+    inBattle.add(b.tokenA.toLowerCase());
+    inBattle.add(b.tokenB.toLowerCase());
+  }
+  return tokens.filter(t => {
+    if (t.disqualified || !t.averageReady) return false;
+    const key = t.token.toLowerCase();
+    const matters =
+      inBattle.has(key) ||
+      (t.belowThresholdSince !== 0 && !t.hasBattled) ||
+      (opts.bookingOpen && isBookable(t));
+    const quiet = now - t.lastSwapAt >= opts.quietSeconds;
+    const pokedLately = now - (opts.lastPokeAt[key] ?? 0) < opts.quietSeconds;
+    return matters && quiet && !pokedLately;
+  });
 }
 
 /**

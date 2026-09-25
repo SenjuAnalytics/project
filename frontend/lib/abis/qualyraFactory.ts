@@ -87,6 +87,11 @@ export const qualyraFactoryAbi = [
   },
   {
     "type": "error",
+    "name": "QuoteAssetDecimalsTooHigh",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "QuoteAssetDecimalsTooLow",
     "inputs": []
   },
@@ -1155,6 +1160,19 @@ export const qualyraFactoryAbi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "MAX_QUOTE_ASSET_DECIMALS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"

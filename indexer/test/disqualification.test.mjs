@@ -1,33 +1,15 @@
 /**
- * disqualification.test.mjs — OFFLINE tests for the outcome the vault's
- * disqualification record forces (src/disqualification.ts), and for how
- * buildBattle commits it. Mirrors QualyraCompetitionVault._disqualificationOutcome.
+ * disqualification.test.mjs — OFFLINE tests for how buildBattle commits the
+ * outcome the vault's disqualification record forces. The vault works that
+ * outcome out itself (QualyraCompetitionVault.forcedOutcomeOf); the rule is
+ * tested in the contracts' Foundry suite.
  */
 import "./_fixtureEnv.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { disqualificationOutcome } from "../src/disqualification.ts";
 import { buildBattle } from "../src/build.ts";
 import { OUTCOME, PAIR_ASSETS } from "../src/config.ts";
-
-const clean = { disqualified: false, disqualifiedAt: 0n };
-const droppedAt = at => ({ disqualified: true, disqualifiedAt: at });
-
-test("no drop on either side leaves the scores to decide", () => {
-  assert.equal(disqualificationOutcome(clean, clean), OUTCOME.None);
-});
-
-test("the token that dropped loses", () => {
-  assert.equal(disqualificationOutcome(droppedAt(100n), clean), OUTCOME.DisqualifiedA);
-  assert.equal(disqualificationOutcome(clean, droppedAt(100n)), OUTCOME.DisqualifiedB);
-});
-
-test("both dropped: the first to drop loses, the same second voids the battle", () => {
-  assert.equal(disqualificationOutcome(droppedAt(100n), droppedAt(101n)), OUTCOME.DisqualifiedA);
-  assert.equal(disqualificationOutcome(droppedAt(102n), droppedAt(101n)), OUTCOME.DisqualifiedB);
-  assert.equal(disqualificationOutcome(droppedAt(101n), droppedAt(101n)), OUTCOME.Void);
-});
 
 const USDG = PAIR_ASSETS.USDG.address.toLowerCase();
 const TOKEN_A = "0x000000000000000000000000000000000000aaaa";

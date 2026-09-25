@@ -21,10 +21,9 @@ import {MockSequencerFeed} from "./mocks/MockSequencerFeed.sol";
 ///         no-op on oracle problems, the worked-example market-cap math, and access control.
 ///
 ///         The engine is exercised through a REAL QualyraFactory so `priceFeedOf`, `heartbeatOf`,
-///         `sequencerUptimeFeed`, `sequencerGracePeriod`, `quoteAssetConfig(...).decimals`, `curveOf`
-///         and `hook()` all resolve exactly as in production. A launch registers a real curve address
-///         (via the deployer) so `curveOf(token)` is known and can be pranked as the trade source.
-///         The token itself is a plain 18-dec MockERC20 with a controllable `totalSupply()`.
+///         `sequencerUptimeFeed`, `sequencerGracePeriod`, `quoteAssetConfig(...).decimals` and `hook()` all
+///         resolve exactly as in production. The factory's hook module is a plain address pranked as the only
+///         trade source; the launch's real curve is kept to show it is rejected.
 ///
 ///         NO fund movement is asserted here — this step only sets flags and emits events.
 contract QualyraEligibilityTest is Test {
@@ -35,11 +34,12 @@ contract QualyraEligibilityTest is Test {
     uint256 internal constant GRACE = 3_600; // 1h
     uint256 internal constant MC_THRESHOLD_USD = 100_000e18;
     uint256 internal constant ELIGIBILITY_WINDOW = 24 hours;
+    uint256 internal constant DQ_DWELL = 30 minutes;
 
     // Local copies of the engine events so vm.expectEmit can match them by signature.
     event EligibilityTimerStarted(address indexed token, uint256 mcUsd, uint48 at);
     event TokenEligible(address indexed token, uint48 at);
-    event TokenDisqualified(address indexed token, bool duringLiveBattle, uint256 mcUsd, uint48 at);
+    event TokenDisqualified(address indexed token, bool booked, uint256 mcUsd, uint48 at);
 
     QualyraFactory internal factory;
     QualyraLaunchDeployer internal deployer;
@@ -56,7 +56,7 @@ contract QualyraEligibilityTest is Test {
     address internal hook = makeAddr("hook");
     address internal stranger = makeAddr("stranger");
 
-    // A launch token + its registered curve (the authorised trade source).
+    // A launch token and its registered curve.
     MockERC20 internal token;
     address internal curve;
 
@@ -92,9 +92,7 @@ contract QualyraEligibilityTest is Test {
         factory.setSequencerFeed(address(seq), GRACE);
         factory.setPriceFeed(address(0), address(ethUsd), HEARTBEAT); // native ETH -> ETH/USD feed
 
-        // Register a real launch so factory.curveOf(token) resolves to a known curve we can prank as.
-        // We deploy the token separately as a plain 18-dec ERC20 whose totalSupply we control, and point
-        // the launch's token key at it via a fresh launch (curve address comes from the deployer).
+        // Register a real launch so the token and its curve exist as in production.
         (address launchToken, address launchCurve) = _launch();
         token = MockERC20(launchToken);
         curve = launchCurve;
@@ -117,10 +115,16 @@ contract QualyraEligibilityTest is Test {
         (launchToken, launchCurve) = factory.launchToken{value: fee}(params);
     }
 
-    /// @dev Calls onTradeClose as the token's registered curve (the authorised trade source).
+    /// @dev Calls onTradeClose as the pool hook, the only authorised reporter.
     function _close(uint256 tokenPriceInAsset) internal {
-        vm.prank(curve);
+        vm.prank(hook);
         competition.onTradeClose(address(token), tokenPriceInAsset, address(0));
+    }
+
+    /// @dev Moves time forward and keeps the ETH/USD answer fresh, as a live feed would be.
+    function _skipFresh(uint256 duration) internal {
+        skip(duration);
+        ethUsd.setUpdatedAt(vm.getBlockTimestamp());
     }
 
     function _eligibility(address t)
@@ -197,38 +201,104 @@ contract QualyraEligibilityTest is Test {
         (uint48 firstCloseAt,,,) = _eligibility(address(token));
         assertGt(firstCloseAt, 0);
 
-        // Later (still inside the window, not eligible yet) MC drops below threshold -> permanent DQ.
+        // Later (still inside the window, not eligible yet) MC drops below the threshold and stays there.
         skip(1 hours);
-        vm.expectEmit(true, true, true, true, address(competition));
-        emit TokenDisqualified(address(token), false, 2e18, uint48(vm.getBlockTimestamp()));
         _close(1e6); // mc = $2
+        uint48 droppedAt = uint48(vm.getBlockTimestamp());
+        assertEq(competition.belowThresholdSince(address(token)), droppedAt);
+        (,, bool disqualifiedYet,) = _eligibility(address(token));
+        assertFalse(disqualifiedYet, "one report below the threshold is not enough");
+
+        _skipFresh(DQ_DWELL);
+        vm.expectEmit(true, true, true, true, address(competition));
+        emit TokenDisqualified(address(token), false, 2e18, droppedAt);
+        _close(1e6);
 
         (, bool eligible, bool disqualified, uint48 disqualifiedAt) = _eligibility(address(token));
         assertTrue(disqualified, "disqualified");
         assertFalse(eligible);
-        assertEq(disqualifiedAt, uint48(vm.getBlockTimestamp()));
+        assertEq(disqualifiedAt, droppedAt, "dated from the drop, not from the report that confirmed it");
 
         // Subsequent qualifying closes even after 24h must NOT re-eligible a disqualified token.
         vm.warp(uint256(firstCloseAt) + ELIGIBILITY_WINDOW + 1 days);
+        ethUsd.setUpdatedAt(vm.getBlockTimestamp());
         _close(1e12); // back above threshold
         (, bool eligibleAfter, bool stillDq,) = _eligibility(address(token));
         assertTrue(stillDq, "disqualification is permanent");
         assertFalse(eligibleAfter, "never becomes eligible after DQ");
     }
 
-    function test_liveBattle_dropBelowThreshold_disqualifiesDuringBattle() public {
-        // Simulate a live battle for the token via the mock competition vault the FACTORY points at?
-        // The engine reads its OWN activeBattleOf, so drive the vault's schedule directly by pranking
-        // the operator through scheduleBattles is heavy; instead assert the non-live path is exercised
-        // and rely on activeBattleOf() default (0 => not live) for the other tests. Here we only verify
-        // that a below-threshold close while NOT live disqualifies with duringLiveBattle == false, and
-        // separately that the live flag plumbs through activeBattleOf (covered by the vault's own suite).
-        // Start timer then DQ (not live) — duringLiveBattle must be false.
+    function test_aDropEndsOnlyOnceTheThresholdHeldForTheDwell() public {
         _close(1e12);
-        skip(1 hours);
-        vm.expectEmit(true, true, true, true, address(competition));
-        emit TokenDisqualified(address(token), false, 2e18, uint48(vm.getBlockTimestamp()));
+        _skipFresh(1 hours);
         _close(1e6);
+        uint48 droppedAt = uint48(vm.getBlockTimestamp());
+        _skipFresh(DQ_DWELL - 1);
+        _close(1e6); // still below, one second short of the dwell
+        (,, bool disqualified,) = _eligibility(address(token));
+        assertFalse(disqualified);
+
+        _close(1e12); // back above, but the drop isn't over yet
+        assertEq(competition.belowThresholdSince(address(token)), droppedAt);
+        _skipFresh(DQ_DWELL);
+        _close(1e12); // held the threshold for DQ_DWELL: now it is
+        assertEq(competition.belowThresholdSince(address(token)), 0);
+
+        _skipFresh(1 hours);
+        _close(1e6); // a new drop starts its own clock
+        (,, disqualified,) = _eligibility(address(token));
+        assertFalse(disqualified, "the clock restarted with the new drop");
+        assertEq(competition.belowThresholdSince(address(token)), uint48(vm.getBlockTimestamp()));
+    }
+
+    /// @notice Pushing the price back above the threshold for a few minutes doesn't reset the clock.
+    function test_aShortRecovery_doesNotEndTheDrop() public {
+        _close(1e12);
+        _skipFresh(1 hours);
+        _close(1e6);
+        uint48 droppedAt = uint48(vm.getBlockTimestamp());
+        _skipFresh(5 minutes);
+        _close(1e12);
+        _skipFresh(DQ_DWELL - 5 minutes);
+        _close(1e6);
+
+        (,, bool disqualified, uint48 disqualifiedAt) = _eligibility(address(token));
+        assertTrue(disqualified);
+        assertEq(disqualifiedAt, droppedAt);
+    }
+
+    function test_shortDropInsideTheWindow_stillBecomesEligible() public {
+        _close(1e12);
+        (uint48 firstCloseAt,,,) = _eligibility(address(token));
+        _skipFresh(6 hours);
+        _close(1e6);
+        _skipFresh(10 minutes);
+        _close(1e12);
+
+        vm.warp(uint256(firstCloseAt) + ELIGIBILITY_WINDOW);
+        ethUsd.setUpdatedAt(vm.getBlockTimestamp());
+        _close(1e12);
+        (, bool eligible, bool disqualified,) = _eligibility(address(token));
+        assertTrue(eligible);
+        assertFalse(disqualified);
+    }
+
+    function test_eligibleToken_thatStaysBelow_isDisqualified() public {
+        _close(1e12);
+        (uint48 firstCloseAt,,,) = _eligibility(address(token));
+        vm.warp(uint256(firstCloseAt) + ELIGIBILITY_WINDOW);
+        ethUsd.setUpdatedAt(vm.getBlockTimestamp());
+        _close(1e12);
+        (, bool eligible,,) = _eligibility(address(token));
+        assertTrue(eligible);
+
+        // Queued and waiting for a booking, it still has to hold the threshold.
+        _skipFresh(2 days);
+        _close(1e6);
+        _skipFresh(DQ_DWELL);
+        _close(1e6);
+        (,, bool disqualified,) = _eligibility(address(token));
+        assertTrue(disqualified);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -277,6 +347,8 @@ contract QualyraEligibilityTest is Test {
     function test_disqualified_isPermanent_earlyReturn() public {
         _close(1e12); // timer
         skip(1 hours);
+        _close(1e6); // below
+        _skipFresh(DQ_DWELL);
         _close(1e6); // DQ
         (,, bool disqualified,) = _eligibility(address(token));
         assertTrue(disqualified);
@@ -307,9 +379,10 @@ contract QualyraEligibilityTest is Test {
         assertEq(firstCloseAt, uint48(vm.getBlockTimestamp()), "hook may start the timer");
     }
 
-    function test_accessControl_curveIsAllowed() public {
-        _close(1e12);
-        (uint48 firstCloseAt,,,) = _eligibility(address(token));
-        assertEq(firstCloseAt, uint48(vm.getBlockTimestamp()), "curve may start the timer");
+    /// @notice Curve trades don't report: eligibility runs on the pool's time-weighted price only.
+    function test_accessControl_curveIsRejected() public {
+        vm.prank(curve);
+        vm.expectRevert(QualyraCompetitionVault.NotTradeSource.selector);
+        competition.onTradeClose(address(token), 1e12, address(0));
     }
 }

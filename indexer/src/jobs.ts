@@ -17,7 +17,7 @@ import {
 import { buildBattle, buildWeek, type BattleBuild, type WeekBuild } from "./build.ts";
 import { DEPLOY_BLOCK, ZERO_ADDRESS, type ResolvedAddresses } from "./config.ts";
 import { selectPriceProvider } from "./price/selectPriceProvider.ts";
-import { readDisqualificationOutcome } from "./disqualification.ts";
+import { readForcedOutcome } from "./disqualification.ts";
 import { resolveBattleWindow, resolveWeekFromBlock, type BlockWindow } from "./window.ts";
 import { QualyraCompetitionVaultAbi } from "./abi/index.ts";
 
@@ -65,12 +65,7 @@ export async function computeBattleInWindow(
   // Resolve the price basis before the scan so a misconfigured pool fails fast.
   const prices = await selectPriceProvider(client, resolvePriceBlock(window.toBlock));
   const trades = await ingestTrades(client, window.fromBlock, window.toBlock, curveMap);
-  const disqualification = await readDisqualificationOutcome(
-    client,
-    resolved.competitionVault,
-    ref.tokenA,
-    ref.tokenB,
-  );
+  const disqualification = await readForcedOutcome(client, resolved.competitionVault, ref.battleId);
   return buildBattle(
     ref.battleId,
     ref.tokenA,

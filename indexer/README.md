@@ -5,9 +5,10 @@
 > The indexer's role is battle scoring, **Trader League scoring** (qualified volume, weekly winners) and the
 > deterministic `datasetHash`/`resultHash` commitments. It does **not** gate who may enter a battle.
 > Battle outcomes follow `docs/FEE-AND-BATTLE-SPEC.md`: a win sends the whole pot to the winner's buyback &
-> burn. A token that closes below the threshold during its battle loses; when both do, the first to drop loses
-> and two drops in the same second void the battle. The vault records that and only accepts the outcome it
-> forces, so the indexer reads the record and commits that outcome (`src/disqualification.ts`). On a draw or a
+> burn. A token disqualified after its booking (30 minutes below the threshold on the pool's average price)
+> loses; when both are, the first to drop loses and two drops dated to the same second void the battle. The
+> vault records that and only accepts the outcome it forces, so the indexer reads the record and commits that
+> outcome (`src/disqualification.ts`). On a draw or a
 > void each token's own contribution buys back and burns that token (never a 50/50 split, never the Trader League).
 
 An offline-reproducible indexer that reads Qualyra events from the Robinhood
@@ -221,11 +222,12 @@ to start if it finds a key there. Point the vault at the operator wallet once, t
 
 | Duty | Wallet | When |
 |------|--------|------|
-| Book ready tokens for the coming 00:00 UTC, neighbours by market cap on the same pair asset | operator | from `OPERATOR_BOOKING_HOUR_UTC` (18:00) |
+| Book ready tokens for the coming 00:00 UTC, neighbours by market cap on the same pair asset, skipping any token whose market cap is below $100k right now | operator | from `OPERATOR_BOOKING_HOUR_UTC` (18:00) |
 | Post a battle's result (the vault's disqualification record decides first) | operator | when its 24 hours are over and buried under `INDEXER_CONFIRMATIONS` |
 | Post a league week's winners | operator | when the week is over (Monday 00:00 UTC) and buried |
 | Finalize a battle; its first buyback tranche runs in the same transaction | keeper | 24h after the result is posted |
 | Run the remaining buyback tranches | keeper | every 30 minutes until the pot is spent |
+| Run the eligibility check (`pokeEligibility`) of a token in a drop below $100k, booked or live, or bookable while booking is open | keeper | once it has gone `OPERATOR_POKE_QUIET_SECONDS` (600) without a swap, at most that often |
 | Finalize a league week, which opens the claims | keeper | 48h after the winners are posted |
 | Sweep the fees the pool hook holds; release expired pending pots | keeper | daily at `OPERATOR_SWEEP_AT_UTC` (23:40) |
 | Recompute posted results; alert on a mismatch or a duty running late | none | every pass |
@@ -516,9 +518,9 @@ Runs nine suites offline (no network):
 - `test/window.test.mjs` — battle and week block windows on a fake chain that packs
   several blocks into each second: exact first and last blocks, open vs closed,
   the confirmation buffer, and a week that began before the deploy.
-- `test/disqualification.test.mjs` — the outcome the disqualification record
-  forces (one drop, the first of two, the same second) and how `buildBattle`
-  commits it without touching the scores or the dataset.
+- `test/disqualification.test.mjs` — how `buildBattle` commits the outcome the
+  vault's disqualification record forces (`forcedOutcomeOf`) without touching the
+  scores or the dataset. The rule itself is tested in the contracts' suite.
 - `test/operatorPlan.test.mjs` — what the service finds due: results, finalizing,
   tranches per token, league weeks, 00:00 UTC starts, pairing by market cap, the
   daily sweep.

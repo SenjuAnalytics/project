@@ -40,6 +40,9 @@ contract QualyraFactory is Ownable2Step, ReentrancyGuard {
     /// @dev Minimum decimals a quote asset may report. Below six, integer
     ///      basis-point curve fees can round to zero and be split fee-free.
     uint8 public constant MIN_QUOTE_ASSET_DECIMALS = 6;
+    /// @dev Maximum decimals a quote asset may report. The hook scales pool prices to 18 decimals, and
+    ///      the scale factor for anything above this would stop fitting its arithmetic.
+    uint8 public constant MAX_QUOTE_ASSET_DECIMALS = 36;
 
     address public deployer;
     address public feeVault;
@@ -125,6 +128,7 @@ contract QualyraFactory is Ownable2Step, ReentrancyGuard {
     error UnknownToken();
     error RenounceDisabled();
     error QuoteAssetDecimalsTooLow();
+    error QuoteAssetDecimalsTooHigh();
     error QuoteAssetDecimalsMismatch(uint8 expected, uint8 actual);
     error QuoteAssetDecimalsUnavailable();
     /// @dev A configured (non-zero) price feed must carry a non-zero staleness bound.
@@ -176,6 +180,7 @@ contract QualyraFactory is Ownable2Step, ReentrancyGuard {
         if (!initialized) revert NotInitialized();
         if (phantomQuote == 0 || graduationThreshold == 0) revert InvalidConfig();
         if (expectedDecimals < MIN_QUOTE_ASSET_DECIMALS) revert QuoteAssetDecimalsTooLow();
+        if (expectedDecimals > MAX_QUOTE_ASSET_DECIMALS) revert QuoteAssetDecimalsTooHigh();
         if (asset == address(0)) {
             // Native ETH has no metadata to read and is 18 decimals by definition.
             if (expectedDecimals != 18) revert QuoteAssetDecimalsMismatch(18, expectedDecimals);

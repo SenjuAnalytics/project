@@ -10,16 +10,14 @@
  *   battle 3  cancelled booking               -> nothing to do, remembered as settled
  *   battle 4  our posted result was vetoed    -> not posted again, alert
  *   token 1   fees parked in the hook         -> keeper sweeps them
- *   tokens 1+2 ready to battle                -> operator books them, larger market cap first
+ *   tokens 1+2 ready to battle, no swap in an hour -> keeper runs their eligibility check first
+ *   tokens 1+2 ready to battle                -> operator books them, larger average market cap first
  */
 import "./_fixtureEnv.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { encodeAbiParameters, keccak256 } from "viem";
-
 import { runPass } from "../src/operator/service.ts";
-import { computePoolId } from "../src/price/OnchainPriceProvider.ts";
 import { emptyState } from "../src/operator/state.ts";
 import { DAY } from "../src/operator/plan.ts";
 
@@ -46,13 +44,8 @@ const launches = {
   [T4]: { quoteAsset: ETH, graduated: false },
 };
 
-// Token price in ETH: sqrtPriceX96 = 2^96 is 1:1, 2^95 makes the token four times as valuable.
-const sqrtPrice = { [T1]: 1n << 96n, [T2]: 1n << 95n };
-const poolKey = token => ({ currency0: ETH, currency1: token, fee: 0, tickSpacing: 60, hooks: HOOK });
-// Where the PoolManager keeps each pool's slot0: keccak256(poolId, POOLS_SLOT = 6).
-const slot0Of = token =>
-  keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }], [computePoolId(poolKey(token)), 6n]));
-const tokenBySlot = Object.fromEntries([T1, T2].map(t => [slot0Of(t), t]));
+// 30-minute average price in ETH, 18 decimals: token 2 is worth four times token 1. No swap for an hour.
+const average = { [T1]: 10n ** 18n, [T2]: 4n * 10n ** 18n };
 const SUPPLY = 10n ** 27n;
 
 function fakeClient() {
@@ -83,6 +76,8 @@ function fakeClient() {
         return launches[args[0]];
       case "eligibilityOf":
         return [NOW - 5 * DAY, true, false, 0];
+      case "belowThresholdSince":
+        return 0;
       case "hasBattled":
         return args[0] === T3;
       case "accruedFees":
@@ -91,13 +86,8 @@ function fakeClient() {
         return 0n;
       case "isPendingExpired":
         return false;
-      case "poolKeyOf":
-        return poolKey(args[0]);
-      case "extsload": {
-        const token = tokenBySlot[args[0]];
-        if (!token) throw new Error(`extsload of an unknown slot ${args[0]}`);
-        return "0x" + sqrtPrice[token].toString(16).padStart(64, "0");
-      }
+      case "twapOf":
+        return [average[args[0]] ?? 10n ** 18n, true, BigInt(NOW - HOUR)];
       case "totalSupply":
         return SUPPLY;
       default:
@@ -138,6 +128,7 @@ function context(client) {
       bookingHourUtc: 18,
       minBookingLeadSeconds: 3600,
       sweepMinuteUtc: 23 * 60 + 40,
+      pokeQuietSeconds: 600,
       statePath: "/dev/null",
     },
     client,
@@ -149,7 +140,7 @@ function context(client) {
   };
 }
 
-test("one pass: keeper settles, runs tranches and sweeps; operator books; a vetoed result is left alone", async () => {
+test("one pass: keeper settles, runs tranches, checks quiet tokens and sweeps; operator books; a vetoed result is left alone", async () => {
   const client = fakeClient();
   const ctx = context(client);
   const warnings = [];
@@ -172,9 +163,12 @@ test("one pass: keeper settles, runs tranches and sweeps; operator books; a veto
   assert.deepEqual(sent, [
     `${keeper}:finalizeBattle(1)`,
     `${keeper}:executeBuyback(2,${T7})`,
+    `${keeper}:pokeEligibility(${T1})`,
+    `${keeper}:pokeEligibility(${T2})`,
     `${keeper}:sweepFees(${T1},0)`,
     `${operator}:scheduleBattles(${T2},${T1},${start})`,
   ]);
+  assert.equal(ctx.state.lastPokeAt[T1.toLowerCase()], NOW);
 
   assert.equal(ctx.state.lastSweepDay, Math.floor(NOW / DAY));
   assert.deepEqual(ctx.state.vetoedBattles, [4]);
@@ -208,6 +202,6 @@ test("a dry run simulates the same calls and sends none", async () => {
     console.log = originalLog;
     console.warn = originalWarn;
   }
-  assert.equal(client.calls.length, 4);
+  assert.equal(client.calls.length, 6);
   assert.equal(written, 0);
 });

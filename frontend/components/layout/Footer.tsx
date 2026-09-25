@@ -405,7 +405,7 @@ export function Footer() {
                         <li><b>Before its battle:</b> 70% is held for the token&apos;s own battle pot, 30% funds the Trader League.</li>
                         <li><b>During its battle:</b> all of it goes into the battle pot.</li>
                         <li><b>After its battle:</b> 70% to the treasury, 30% to the Trader League. Each token battles once.</li>
-                        <li><b>Disqualified before qualifying:</b> all of it to the treasury, along with what was held for its pot.</li>
+                        <li><b>Disqualified before its battle is booked:</b> all of it to the treasury, along with what was held for its pot.</li>
                       </ul>
                     </div>
 

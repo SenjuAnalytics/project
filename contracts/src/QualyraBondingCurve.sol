@@ -11,7 +11,6 @@ import {QualyraLaunchToken} from "./QualyraLaunchToken.sol";
 import {QualyraFees} from "./libraries/QualyraFees.sol";
 import {IQualyraFactory} from "./interfaces/IQualyraFactory.sol";
 import {IQualyraFeeVault} from "./interfaces/IQualyraFeeVault.sol";
-import {IQualyraCompetitionVault} from "./interfaces/IQualyraCompetitionVault.sol";
 import {IQualyraGraduationExecutor} from "./interfaces/IQualyraGraduationExecutor.sol";
 
 /// @title QualyraBondingCurve
@@ -209,10 +208,6 @@ contract QualyraBondingCurve is ReentrancyGuard {
             }
         }
 
-        // CLOSE hook (pre-graduation): evaluate market-cap eligibility on the settled price. Skip when
-        // the curve just completed/graduated in this same buy — post-graduation closes are the pool
-        // hook's responsibility and the curve reserves have moved into the pool.
-        if (phase == Phase.Trading) _reportTradeClose();
         return q.tokensOut;
     }
 
@@ -239,8 +234,6 @@ contract QualyraBondingCurve is ReentrancyGuard {
 
         emit Sold(msg.sender, recipient, tokenAmount, q.amountOut, q.tradeFee, q.creatorTax, quoteReserve);
 
-        // CLOSE hook (pre-graduation): evaluate market-cap eligibility on the settled price.
-        _reportTradeClose();
         return q.amountOut;
     }
 
@@ -313,23 +306,8 @@ contract QualyraBondingCurve is ReentrancyGuard {
 
     /// @notice Marginal price of one whole token (1e18 units), in pair asset units.
     function spotPrice() external view returns (uint256) {
-        return _spotPrice();
-    }
-
-    /// @dev Internal marginal price so on-chain callers avoid an external self-call. Same semantics as
-    ///      `spotPrice()`: price of one whole (1e18) token expressed in pair-asset units.
-    function _spotPrice() private view returns (uint256) {
         if (tokenReserve == 0) return 0;
         return Math.mulDiv(phantomQuote + quoteReserve, 1e18, tokenReserve);
-    }
-
-    /// @dev Report a settled (CLOSE) trade to the competition vault so it can evaluate market-cap
-    ///      eligibility on the post-trade price. Wrapped in try/catch so eligibility can NEVER block a
-    ///      trade: the engine is already internally fail-safe, this is defence in depth.
-    function _reportTradeClose() private {
-        address competition = factory.competitionVault();
-        if (competition == address(0)) return;
-        try IQualyraCompetitionVault(competition).onTradeClose(token, _spotPrice(), quoteAsset) {} catch {}
     }
 
     /// @notice Share of the graduation threshold raised so far, in basis points.

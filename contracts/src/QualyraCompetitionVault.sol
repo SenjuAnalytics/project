@@ -73,17 +73,21 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         bytes32 resultHash;
     }
 
-    /// @notice Battle-eligibility bookkeeping for a token (spec §2.1 / plan §4). This is CLOSE-BASED state:
-    ///         it is only advanced by `onTradeClose`, which the curve/hook call after a trade has settled, so
-    ///         an intraday price spike can never start the timer or flip eligibility on its own.
-    /// @dev `firstCloseAt` is the timestamp of the first settled close whose market cap reached the threshold.
-    ///      `eligible` latches true once the 24h window has elapsed while still at/above threshold. `disqualified`
-    ///      is permanent: once set, the token can never become eligible again.
+    /// @notice Battle-eligibility bookkeeping for a token (spec §2.1 / plan §4). It only moves in `onTradeClose`,
+    ///         which the pool hook calls after each swap with the pool's time-weighted price, so a price pushed
+    ///         for a moment can't start the timer or disqualify a token.
+    /// @dev `firstCloseAt` is when the market cap first reached the threshold. `eligible` latches once the 24h
+    ///      window has passed and the market cap is still at or above it. `belowSince` is when the current drop below
+    ///      the threshold began, zero when there is none, and `recoveredAt` when the market cap last came back above
+    ///      it during that drop. A drop ends once the market cap has held the threshold for DQ_DWELL. `disqualified`
+    ///      is permanent, and `disqualifiedAt` is the `belowSince` of the drop that caused it.
     struct Eligibility {
         uint48 firstCloseAt;
         bool eligible;
         bool disqualified;
         uint48 disqualifiedAt;
+        uint48 belowSince;
+        uint48 recoveredAt;
     }
 
     uint256 public constant BATTLE_DURATION = 24 hours;
@@ -104,6 +108,9 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     uint256 public constant MC_THRESHOLD_USD = 100_000e18;
     /// @notice Time a token must stay at/above MC_THRESHOLD_USD (across settled closes) before it is eligible.
     uint256 public constant ELIGIBILITY_WINDOW = 24 hours;
+    /// @notice How long a drop below MC_THRESHOLD_USD may last before the token is disqualified, and how long the
+    ///         market cap must hold the threshold again to end a drop.
+    uint256 public constant DQ_DWELL = 30 minutes;
     /// @notice How long after launch a token may go without starting its eligibility timer. Past that, its pending
     ///         battle pot is released to the treasury and new battle shares go there too, until the timer starts.
     uint256 public constant PENDING_EXPIRY = QualyraFees.PENDING_EXPIRY;
@@ -139,8 +146,8 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     address[] private _assets;
     mapping(address asset => bool) private _isKnownAsset;
 
-    /// @notice Close-based eligibility state per token (spec §2.1 / plan §4). Advanced only by `onTradeClose`.
-    mapping(address token => Eligibility) public eligibilityOf;
+    /// @dev Eligibility state per token (spec §2.1 / plan §4). Advanced only by `onTradeClose`.
+    mapping(address token => Eligibility) private _eligibility;
 
     /// @notice Whether a token has used its one lifetime battle (spec §2.1). Latched `true` when the battle is
     ///         scheduled, so a token can never be booked twice; only a guardian cancel before the start gives it
@@ -187,9 +194,11 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     event EligibilityTimerStarted(address indexed token, uint256 mcUsd, uint48 at);
     /// @notice A token held at/above threshold for the full window and is now league-eligible.
     event TokenEligible(address indexed token, uint48 at);
-    /// @notice A token was permanently disqualified. `duringLiveBattle` distinguishes an in-battle DQ from a
-    ///         pre-eligibility drop; `mcUsd` is the close market cap that triggered it.
-    event TokenDisqualified(address indexed token, bool duringLiveBattle, uint256 mcUsd, uint48 at);
+    /// @notice A token was permanently disqualified after DQ_DWELL below the threshold. `at` is when it went below,
+    ///         `mcUsd` the market cap that confirmed it. `booked` means it was booked for a battle that wasn't over
+    ///         yet: its pot stays in that battle and goes to the other token. Otherwise its pending pot went to the
+    ///         treasury.
+    event TokenDisqualified(address indexed token, bool booked, uint256 mcUsd, uint48 at);
     /// @notice A token's pending battle pot went to the treasury: it was disqualified before battling (§4.1), or it
     ///         passed PENDING_EXPIRY without starting its eligibility timer.
     event PendingBattlePotDrained(address indexed token, address indexed asset, uint256 amount);
@@ -222,7 +231,7 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     error NotMigrated();
     error InvalidSuccessor();
     error NothingToSweep();
-    /// @notice `onTradeClose` was called by an address that is neither the token's curve nor the hook.
+    /// @notice `onTradeClose` was called by an address other than the pool hook.
     error NotTradeSource();
     /// @notice A token proposed for a battle has already used its one lifetime battle (spec §2.1).
     error AlreadyBattled(address token);
@@ -297,10 +306,10 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     // Eligibility engine (spec §2.1 / plan §4).
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Close hook the bonding curve / pool hook call once a trade has settled. It advances the token's
-    ///         eligibility state machine based on its market cap at the settled price. This step is CLOSE-BASED:
-    ///         because it is only ever invoked post-trade (settled state), an intraday spike inside a single
-    ///         transaction cannot start the timer or flip eligibility.
+    /// @notice Called by the pool hook after each swap with the pool's time-weighted price (see
+    ///         QualyraHook.twapOf). It advances the token's eligibility state machine on the market cap at that
+    ///         price. The hook stays silent until the pool has a full window of price history, and bonding curve
+    ///         trades don't report at all, so eligibility starts on the pool.
     /// @dev Fail-safe and non-reverting by design (spec §2.2 / §5 point 8): any oracle problem (sequencer down,
     ///      stale/paused/unconfigured feed) makes this a no-op, so trading is never blocked and tokens are never
     ///      wrongly disqualified. The only funds it moves are on a pre-battle disqualification, when the token's
@@ -311,25 +320,43 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     ///      performs staticcall reads through the oracle's try/catch, so there is no external-call reentrancy to
     ///      guard against and the trading path stays lightweight.
     /// @param token The launch token that just traded.
-    /// @param tokenPriceInAsset Settled price of one whole token, in the pair asset's own decimals (curve
-    ///        `spotPrice()` convention).
+    /// @param tokenPrice18 Average price of one whole token in whole pair asset units, 18-decimal fixed point.
     /// @param asset The pair asset (address(0) for native ETH).
-    function onTradeClose(address token, uint256 tokenPriceInAsset, address asset) external {
-        if (msg.sender != factory.curveOf(token) && msg.sender != factory.hook()) revert NotTradeSource();
+    function onTradeClose(address token, uint256 tokenPrice18, address asset) external {
+        if (msg.sender != factory.hook()) revert NotTradeSource();
+        _evaluate(token, tokenPrice18, asset);
+    }
 
-        Eligibility storage e = eligibilityOf[token];
+    /// @notice Runs the same check on the pool's current average without waiting for a trade. Anyone can call it: a
+    ///         token nobody trades, or whose dollar value moves with its pair asset, would otherwise go unchecked.
+    ///         The keeper pokes the tokens where timing matters. A no-op until the pool's average is ready.
+    function pokeEligibility(address token) external nonReentrant {
+        (uint256 price18, bool ready,) = IQualyraHook(factory.hook()).twapOf(token);
+        if (!ready) return;
+        _evaluate(token, price18, factory.getLaunch(token).quoteAsset);
+    }
+
+    /// @dev The eligibility state machine behind both entry points.
+    function _evaluate(address token, uint256 tokenPrice18, address asset) private {
+        Eligibility storage e = _eligibility[token];
         // 1. Disqualification is permanent.
         if (e.disqualified) return;
 
-        // 2. Evaluate market cap. Any oracle problem is NOT-EVALUABLE -> no-op (no timer, no DQ, never revert).
-        // Fail-safe: not evaluable -> no timer, no DQ, never revert (spec §5 point 8).
-        (uint256 mc, bool evaluable) = _marketCapUsd(token, tokenPriceInAsset, asset);
+        // 2. The rule ends with the token's battle. Once its 24 hours are over nothing here can change, and the
+        //    result is built from the record as it stood at the end, so the oracle isn't even read.
+        Schedule memory schedule = _schedules[token];
+        bool booked = schedule.startTime != 0;
+        if (booked && block.timestamp >= uint256(schedule.startTime) + BATTLE_DURATION) return;
+
+        // 3. Evaluate market cap. Any oracle problem is NOT-EVALUABLE -> no-op (no timer, no DQ, never revert;
+        //    spec §5 point 8).
+        (uint256 mc, bool evaluable) = _marketCapUsd(token, tokenPrice18, asset);
         if (!evaluable) return;
 
         uint48 nowTs = uint48(block.timestamp);
 
-        // Timer not started yet: only a close >= threshold starts the 24h timer. A below-threshold close does nothing
-        // (the token has never qualified, so there is nothing to disqualify; its stuck pending is handled by releaseExpiredPending).
+        // Timer not started yet: only a close at or above the threshold starts the 24h timer. A close below it does
+        // nothing, since the token never qualified; releaseExpiredPending takes care of its pending pot.
         if (e.firstCloseAt == 0) {
             if (mc >= MC_THRESHOLD_USD) {
                 e.firstCloseAt = nowTs;
@@ -338,42 +365,53 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
             return;
         }
 
-        // Continuous-maintenance rule: once the timer has started, ANY settled close below the threshold permanently
-        // disqualifies the token — while ramping, eligible-and-queued, reserved for a battle, or in a live battle.
-        if (mc < MC_THRESHOLD_USD) {
-            // committed == the token's pending pot has already moved into a battle pot: reserved (pre-start) OR live,
-            // i.e. block.timestamp is before the scheduled battle's end. Mirrors feeBucketOf's window.
-            Schedule memory schedule = _schedules[token];
-            bool committed = schedule.startTime != 0 && block.timestamp < uint256(schedule.startTime) + BATTLE_DURATION;
-            e.disqualified = true;
-            e.disqualifiedAt = nowTs;
-            emit TokenDisqualified(token, committed, mc, nowTs);
-            if (!committed) {
-                // No battle pot in play: release the token's pending battle pot to the treasury (idempotent, no-op if zero).
-                _drainPendingToTreasury(token, asset);
+        if (mc >= MC_THRESHOLD_USD) {
+            // A drop only ends once the market cap has held the threshold for DQ_DWELL, so pushing the price up for a
+            // few minutes now and then can't keep a token that sits below it alive.
+            if (e.belowSince != 0) {
+                if (e.recoveredAt == 0) e.recoveredAt = nowTs;
+                else if (block.timestamp >= uint256(e.recoveredAt) + DQ_DWELL) (e.belowSince, e.recoveredAt) = (0, 0);
             }
-            // committed: leave the pot in play; finalizeBattle/_resolveOutcome makes the disqualified token lose.
+            // Latch eligibility once the 24h window has fully elapsed.
+            if (!e.eligible && block.timestamp >= uint256(e.firstCloseAt) + ELIGIBILITY_WINDOW) {
+                e.eligible = true;
+                emit TokenEligible(token, nowTs);
+            }
             return;
         }
 
-        // mc >= threshold: latch eligibility once the 24h window has fully elapsed.
-        if (!e.eligible && block.timestamp >= uint256(e.firstCloseAt) + ELIGIBILITY_WINDOW) {
-            e.eligible = true;
-            emit TokenEligible(token, nowTs);
+        // From the timer's start until its battle is over, the token has to hold the threshold. A drop that is still
+        // going DQ_DWELL after it began disqualifies the token for good, whether it is still qualifying, queued, booked
+        // or live.
+        uint48 since = e.belowSince;
+        if (since == 0) {
+            e.belowSince = nowTs;
+            return;
         }
+        if (e.recoveredAt != 0) e.recoveredAt = 0; // the recovery didn't hold
+        if (block.timestamp < uint256(since) + DQ_DWELL) return;
+
+        e.disqualified = true;
+        e.disqualifiedAt = since;
+        emit TokenDisqualified(token, booked, mc, since);
+        // Booked: its pending pot already sits in the battle pot, which stays there for the other token
+        // (proposeBattleResult only accepts the disqualification outcome). Otherwise nothing is in play yet, so the
+        // pending pot goes to the treasury.
+        if (!booked) _drainPendingToTreasury(token, asset);
     }
 
     /// @notice Market cap of `token` in USD, normalized to 18 decimals, using the pair asset's Chainlink feed.
     /// @dev Returns `ok == false` (NOT-EVALUABLE) whenever the oracle cannot supply a trustworthy price; callers
     ///      must treat that as a no-op. Decimal math:
-    ///        tokenUsdPrice18 = mulDiv(tokenPriceInAsset, assetUsdPrice18, 10**assetDecimals)
+    ///        tokenUsdPrice18 = mulDiv(tokenPrice18, assetUsdPrice18, 1e18)
     ///        mcUsd           = marketCapUsd18(tokenUsdPrice18, totalSupply)
-    ///      Worked example: ETH/USD $2000 (assetUsdPrice18 = 2000e18), asset = ETH (18 dec),
-    ///      tokenPriceInAsset = 1e12, supply = 1e27 -> tokenUsdPrice18 = 2e15, mcUsd = 2e24 ($2,000,000).
+    ///      Worked example: ETH/USD $2000 (assetUsdPrice18 = 2000e18), tokenPrice18 = 1e12 (0.000001 ETH),
+    ///      supply = 1e27 -> tokenUsdPrice18 = 2e15, mcUsd = 2e24 ($2,000,000). The price is in whole asset units,
+    ///      so the asset's own decimals never come into it.
     /// @param token The launch token (18-dec fixed-supply ERC20Burnable; circulating == totalSupply()).
-    /// @param tokenPriceInAsset Price of one whole token in the pair asset's own decimals.
+    /// @param tokenPrice18 Price of one whole token in whole pair asset units, 18-decimal fixed point.
     /// @param asset The pair asset (address(0) for native ETH).
-    function _marketCapUsd(address token, uint256 tokenPriceInAsset, address asset)
+    function _marketCapUsd(address token, uint256 tokenPrice18, address asset)
         internal
         view
         returns (uint256 mcUsd, bool ok)
@@ -387,8 +425,7 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         // Fail-safe: an unreadable/stale/paused/unconfigured feed makes market cap NOT-EVALUABLE. Guard the
         // happy path (evaluate only when the feed is usable) rather than early-returning on the negation.
         if (priceOk) {
-            uint8 assetDecimals = factory.quoteAssetConfig(asset).decimals;
-            uint256 tokenUsdPrice18 = Math.mulDiv(tokenPriceInAsset, assetUsdPrice18, 10 ** assetDecimals);
+            uint256 tokenUsdPrice18 = Math.mulDiv(tokenPrice18, assetUsdPrice18, 1e18);
             uint256 supply = IERC20(token).totalSupply();
             mcUsd = QualyraOracle.marketCapUsd18(tokenUsdPrice18, supply);
             ok = priceOk; // reached only when priceOk is true, so this always sets ok true.
@@ -482,10 +519,10 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
             if (scoreA >= scoreB + DRAW_MARGIN || scoreB >= scoreA + DRAW_MARGIN) revert InvalidResult();
         }
 
-        // Spec §6: a token that closed below the threshold during the battle loses, the first of two to drop loses,
-        // and two drops in the same second void the battle. Scores can't overturn that record, and a DQ outcome
-        // needs one.
-        Outcome dq = _disqualificationOutcome(battle.tokenA, battle.tokenB);
+        // Spec §6: a token disqualified after its booking loses, the first of two to drop loses, and two drops dated
+        // to the same second void the battle. Scores can't overturn that record, and a DQ outcome needs one.
+        Outcome dq =
+            _disqualificationOutcome(battle.tokenA, battle.tokenB, uint256(battle.startTime) + BATTLE_DURATION);
         bool dqClaimed = outcome == Outcome.DisqualifiedA || outcome == Outcome.DisqualifiedB;
         if (dq == Outcome.None ? dqClaimed : outcome != dq) revert InvalidResult();
 
@@ -555,8 +592,9 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     }
 
     /// @notice Calls off a booked battle before it starts. Both tokens get their battle back and whatever the pot
-    ///         holds returns to their pending pots, so they can be booked again with nothing lost. Guardian only;
-    ///         meant for a schedule the operator got wrong.
+    ///         holds returns to their pending pots, so they can be booked again with nothing lost. A token that was
+    ///         disqualified while booked can't be booked again, so its share goes to the treasury instead. Guardian
+    ///         only; meant for a schedule the operator got wrong.
     function cancelBattle(uint256 battleId) external onlyGuardian {
         Battle storage battle = _battles[battleId];
         if (battle.tokenA == address(0) || battle.finalized) revert UnknownBattle();
@@ -793,7 +831,7 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     // Views
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Battle `token` is live in right now, or zero. The eligibility engine reads it to spot a live DQ.
+    /// @notice Battle `token` is live in right now, or zero.
     function activeBattleOf(address token) public view returns (uint256) {
         Schedule memory schedule = _schedules[token];
         return _isLive(schedule.startTime) ? schedule.battleId : 0;
@@ -817,13 +855,42 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         return block.timestamp < uint256(schedule.startTime) + BATTLE_DURATION ? schedule.battleId : 0;
     }
 
+    /// @notice Close-based eligibility state of `token` (spec §2.1).
+    function eligibilityOf(address token)
+        external
+        view
+        returns (uint48 firstCloseAt, bool eligible, bool disqualified, uint48 disqualifiedAt)
+    {
+        Eligibility storage e = _eligibility[token];
+        return (e.firstCloseAt, e.eligible, e.disqualified, e.disqualifiedAt);
+    }
+
+    /// @notice When `token`'s current drop below the threshold began, or zero when there is none. A report still
+    ///         below it DQ_DWELL after that disqualifies the token; the drop ends once the market cap has held the
+    ///         threshold for DQ_DWELL again. A token in a drop can't be booked.
+    function belowThresholdSince(address token) external view returns (uint48) {
+        return _eligibility[token].belowSince;
+    }
+
+    /// @notice The outcome the disqualification record forces on `battleId`, or None when neither token dropped. It
+    ///         is final once the battle is over, and proposeBattleResult accepts nothing else.
+    function forcedOutcomeOf(uint256 battleId) external view returns (Outcome) {
+        Battle storage battle = _battles[battleId];
+        return _disqualificationOutcome(battle.tokenA, battle.tokenB, uint256(battle.startTime) + BATTLE_DURATION);
+    }
+
     /// @notice Whether `token` went PENDING_EXPIRY since launch without starting its eligibility timer. A token
     ///         that ever started the timer, which includes every eligible, disqualified or battled token, never
     ///         expires.
     function isPendingExpired(address token) public view returns (bool) {
-        if (eligibilityOf[token].firstCloseAt != 0) return false;
-        uint256 launchedAt = factory.getLaunch(token).launchedAt;
-        return launchedAt != 0 && block.timestamp >= launchedAt + PENDING_EXPIRY;
+        if (_eligibility[token].firstCloseAt != 0) return false;
+        IQualyraFactory.Launch memory launch = factory.getLaunch(token);
+        if (launch.launchedAt == 0 || block.timestamp < uint256(launch.launchedAt) + PENDING_EXPIRY) return false;
+        // Its pool only reports once the price average is ready, 30 to 60 minutes after graduation, so a token that
+        // graduated at the last moment gets that long to start its timer.
+        if (!launch.graduated) return true;
+        (, bool ready,) = IQualyraHook(factory.hook()).twapOf(token);
+        return ready;
     }
 
     function scheduleOf(address token) external view returns (Schedule memory) {
@@ -895,25 +962,39 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     }
 
     /// @dev Gives `token` its battle back after a cancel: its share of the pot returns to pending, and nothing
-    ///      tags its fees to the old battle any more.
+    ///      tags its fees to the old battle any more. A token disqualified while booked will never battle, so its
+    ///      share goes on to the treasury, as it would have had it dropped before the booking.
     function _returnBattle(uint256 battleId, address token, address asset) private {
         pendingBattlePot[token][asset] += contributionOf[battleId][token];
         contributionOf[battleId][token] = 0;
         hasBattled[token] = false;
         delete _schedules[token];
+        if (_eligibility[token].disqualified) _drainPendingToTreasury(token, asset);
     }
 
-    /// @dev Outcome fixed by the disqualification record of a battle's two tokens, or None when neither dropped.
-    ///      A booked token can only be disqualified while its battle is live, so any record here is from the battle.
-    function _disqualificationOutcome(address tokenA, address tokenB) private view returns (Outcome) {
-        Eligibility storage a = eligibilityOf[tokenA];
-        Eligibility storage b = eligibilityOf[tokenB];
-        if (!a.disqualified && !b.disqualified) return Outcome.None;
-        if (a.disqualified && b.disqualified) {
-            if (a.disqualifiedAt == b.disqualifiedAt) return Outcome.Void;
-            return a.disqualifiedAt < b.disqualifiedAt ? Outcome.DisqualifiedA : Outcome.DisqualifiedB;
+    /// @dev Outcome fixed by the disqualification record of a battle's two tokens, or None when neither dropped. The
+    ///      record stops changing when the battle ends at `end`, so neither does this. Drops are dated from when the
+    ///      market cap went below the threshold, so the earlier one loses.
+    function _disqualificationOutcome(address tokenA, address tokenB, uint256 end) private view returns (Outcome) {
+        (bool outA, uint48 atA) = _droppedOut(tokenA, end);
+        (bool outB, uint48 atB) = _droppedOut(tokenB, end);
+        if (!outA && !outB) return Outcome.None;
+        if (outA && outB) {
+            if (atA == atB) return Outcome.Void;
+            return atA < atB ? Outcome.DisqualifiedA : Outcome.DisqualifiedB;
         }
-        return a.disqualified ? Outcome.DisqualifiedA : Outcome.DisqualifiedB;
+        return outA ? Outcome.DisqualifiedA : Outcome.DisqualifiedB;
+    }
+
+    /// @dev Whether `token` was out of its battle ending at `end`, and since when. Besides a disqualification, a drop
+    ///      that had run for DQ_DWELL by the end, with the token still below at its last report, counts too: it only
+    ///      lacked a trade to confirm it.
+    function _droppedOut(address token, uint256 end) private view returns (bool out, uint48 at) {
+        Eligibility storage e = _eligibility[token];
+        if (e.disqualified) return (true, e.disqualifiedAt);
+        uint48 since = e.belowSince;
+        if (since != 0 && e.recoveredAt == 0 && uint256(since) + DQ_DWELL <= end) return (true, since);
+        return (false, 0);
     }
 
     function _isLive(uint256 startTime) private view returns (bool) {
@@ -922,11 +1003,12 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
 
     /// @dev Enforces spec §2.1 entry rules for a token about to be scheduled into a battle: it must be
     ///      currently eligible (its market cap held ≥ $100k for the full 24h window), it must not have been
-    ///      disqualified, and it must never have battled before (battles are once-per-lifetime).
+    ///      disqualified or be in a drop below the threshold, and it must never have battled before (battles are
+    ///      once-per-lifetime).
     function _requireBattleReady(address token) private view {
         if (hasBattled[token]) revert AlreadyBattled(token);
-        Eligibility storage e = eligibilityOf[token];
-        if (e.disqualified || !e.eligible) revert NotEligible(token);
+        Eligibility storage e = _eligibility[token];
+        if (e.disqualified || !e.eligible || e.belowSince != 0) revert NotEligible(token);
     }
 
     /// @dev Opens `token`'s side of a freshly scheduled pot. Fees the token earned before the schedule may still sit

@@ -19,7 +19,8 @@ function battleLabel(status: BattleEligibility | undefined): { text: string; col
       return {
         text: `Qualifies ${when(status.eligibleAt)}`,
         color: 'var(--tx)',
-        title: 'Market cap has been at $100k or more since the first close above it. Dropping below before the 24 hours are up disqualifies the token.',
+        title:
+          "Market cap, on the pool's 30-minute average price, has held $100k or more since it first got there. Staying below $100k for 30 minutes before its battle ends disqualifies the token; a short bounce doesn't reset that clock.",
       }
     case 'waiting':
       return { text: 'Below $100k market cap', color: 'var(--dim)' }

@@ -17,11 +17,11 @@ const RULES = [
   },
   {
     title: 'Who can battle',
-    body: 'A graduated token qualifies once its market cap, priced on-chain through Chainlink, has stayed at $100,000 or more for 24 hours. Dropping below it before then disqualifies the token for good. Each token gets one battle, against a token on the same pair asset.',
+    body: "A graduated token qualifies once its market cap has held $100,000 or more for 24 hours. Market cap uses the pool's 30-minute average price, converted to USD through Chainlink. From the moment it first reaches $100,000 until its battle ends, a token that stays below it for 30 minutes is disqualified for good, and a short bounce back above doesn't reset that clock. Each token gets one battle, against a token on the same pair asset.",
   },
   {
     title: 'Scoring',
-    body: "70% share of qualified volume plus 30% share of unique buyers inside the 24 hours. Creator wallets don't count, and a gap under one point is a draw. A token that falls below $100,000 during its battle is disqualified.",
+    body: "70% share of qualified volume plus 30% share of unique buyers inside the 24 hours. Creator wallets don't count, and a gap under one point is a draw. A token disqualified before or during its battle loses it.",
   },
   {
     title: 'Settlement',

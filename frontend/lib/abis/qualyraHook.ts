@@ -754,7 +754,7 @@ export const qualyraHookAbi = [
         ]
       },
       {
-        "name": "",
+        "name": "sqrtPriceX96",
         "type": "uint160",
         "internalType": "uint160"
       }
@@ -766,7 +766,7 @@ export const qualyraHookAbi = [
         "internalType": "bytes4"
       }
     ],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1077,6 +1077,11 @@ export const qualyraHookAbi = [
         "name": "launchedAt",
         "type": "uint64",
         "internalType": "uint64"
+      },
+      {
+        "name": "quoteDecimals",
+        "type": "uint8",
+        "internalType": "uint8"
       }
     ],
     "stateMutability": "view"
@@ -1202,6 +1207,48 @@ export const qualyraHookAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "TWAP_WINDOW",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "twapOf",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "price18",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "ready",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "updatedAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",

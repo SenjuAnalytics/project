@@ -7,9 +7,7 @@
 import {
   createPublicClient,
   createWalletClient,
-  encodeAbiParameters,
   http,
-  keccak256,
   parseAbi,
   type Account,
   type Address,
@@ -27,7 +25,6 @@ import {
   QualyraFactoryAbi,
   QualyraHookAbi,
 } from "../abi/index.ts";
-import { computePoolId } from "../price/OnchainPriceProvider.ts";
 import type { BattleState, BuybackState, TokenState, WeekState } from "./plan.ts";
 import type { ServiceState } from "./state.ts";
 
@@ -59,7 +56,6 @@ export function makeWallet(role: Wallet["role"], key: Hex | undefined): Wallet |
 }
 
 const vaultAbi = QualyraCompetitionVaultAbi as any;
-const extsloadAbi = parseAbi(["function extsload(bytes32 slot) view returns (bytes32)"]);
 const totalSupplyAbi = parseAbi(["function totalSupply() view returns (uint256)"]);
 
 /** How many finished league weeks back the service still looks for missing winners. */
@@ -206,18 +202,24 @@ export async function readTokens(
   const vault = resolved.competitionVault;
   return Promise.all(
     graduated.map(async t => {
-      const [eligibility, hasBattled, accrued, pendingPot, pendingExpired] = await Promise.all([
-        read<readonly [number, boolean, boolean, number]>(client, vault, vaultAbi, "eligibilityOf", [t.token]),
-        read<boolean>(client, vault, vaultAbi, "hasBattled", [t.token]),
-        read<readonly [bigint, bigint]>(client, resolved.hook, QualyraHookAbi, "accruedFees", [t.token, 0n]),
-        read<bigint>(client, vault, vaultAbi, "pendingBattlePot", [t.token, t.asset]),
-        read<boolean>(client, vault, vaultAbi, "isPendingExpired", [t.token]),
-      ]);
+      const [eligibility, belowThresholdSince, average, hasBattled, accrued, pendingPot, pendingExpired] =
+        await Promise.all([
+          read<readonly [number, boolean, boolean, number]>(client, vault, vaultAbi, "eligibilityOf", [t.token]),
+          read<number>(client, vault, vaultAbi, "belowThresholdSince", [t.token]),
+          read<readonly [bigint, boolean, bigint]>(client, resolved.hook, QualyraHookAbi, "twapOf", [t.token]),
+          read<boolean>(client, vault, vaultAbi, "hasBattled", [t.token]),
+          read<readonly [bigint, bigint]>(client, resolved.hook, QualyraHookAbi, "accruedFees", [t.token, 0n]),
+          read<bigint>(client, vault, vaultAbi, "pendingBattlePot", [t.token, t.asset]),
+          read<boolean>(client, vault, vaultAbi, "isPendingExpired", [t.token]),
+        ]);
       return {
         token: t.token,
         asset: t.asset,
         eligible: eligibility[1],
         disqualified: eligibility[2],
+        belowThresholdSince: Number(belowThresholdSince),
+        averageReady: average[1],
+        lastSwapAt: Number(average[2]),
         hasBattled,
         parkedFees: accrued[0] + accrued[1],
         pendingPot,
@@ -228,36 +230,20 @@ export async function readTokens(
 }
 
 /**
- * Market cap of `token` in its pair asset's smallest unit, from the pool's current price. Only compared between
- * tokens on the same pair asset, so no USD price is needed.
- *
- *   price (currency1 per currency0) = sqrtPriceX96^2 / 2^192
+ * Market cap of `token` in whole pair asset units (18 decimals), from the pool's 30-minute average price
+ * (QualyraHook.twapOf), so a price pushed just before the booking can't choose the opponent. Only compared between
+ * tokens on the same pair asset, so no USD price is needed. Zero while the average isn't ready.
  */
 export async function marketCapInAsset(
   client: PublicClient,
   resolved: ResolvedAddresses,
   token: string,
 ): Promise<bigint> {
-  const key = await read<any>(client, resolved.hook, QualyraHookAbi, "poolKeyOf", [token]);
-  const poolId = computePoolId({
-    currency0: key.currency0,
-    currency1: key.currency1,
-    fee: Number(key.fee),
-    tickSpacing: Number(key.tickSpacing),
-    hooks: key.hooks,
-  });
-  // StateLibrary: the pool's slot0 sits at keccak256(poolId, POOLS_SLOT = 6); sqrtPriceX96 is its low 160 bits.
-  const slot = keccak256(encodeAbiParameters([{ type: "bytes32" }, { type: "uint256" }], [poolId, 6n]));
-  const [word, supply] = await Promise.all([
-    read<Hex>(client, resolved.poolManager, extsloadAbi, "extsload", [slot]),
+  const [[price18, ready], supply] = await Promise.all([
+    read<readonly [bigint, boolean, bigint]>(client, resolved.hook, QualyraHookAbi, "twapOf", [token]),
     read<bigint>(client, token, totalSupplyAbi, "totalSupply"),
   ]);
-  const sqrtPriceX96 = BigInt(word) & ((1n << 160n) - 1n);
-  if (sqrtPriceX96 === 0n) return 0n;
-  const q192 = 1n << 192n;
-  const squared = sqrtPriceX96 * sqrtPriceX96;
-  const tokenIsCurrency1 = String(key.currency1).toLowerCase() === token.toLowerCase();
-  return tokenIsCurrency1 ? (supply * q192) / squared : (supply * squared) / q192;
+  return ready ? (price18 * supply) / 10n ** 18n : 0n;
 }
 
 /** The operator the vault trusts, to catch a service started with the wrong key. */

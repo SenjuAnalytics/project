@@ -34,6 +34,8 @@ export interface ServiceState {
   settledBattles: number[];
   /** Launches seen so far, in factory order. Graduation is permanent, so only the rest is re-read. */
   knownTokens: KnownToken[];
+  /** Token (lowercase) -> unix seconds this service last ran its eligibility check. */
+  lastPokeAt: Record<string, number>;
 }
 
 export function emptyState(): ServiceState {
@@ -45,6 +47,7 @@ export function emptyState(): ServiceState {
     alerted: {},
     settledBattles: [],
     knownTokens: [],
+    lastPokeAt: {},
   };
 }
 

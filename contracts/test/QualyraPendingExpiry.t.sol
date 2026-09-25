@@ -166,10 +166,10 @@ contract QualyraPendingExpiryTest is CompetitionTestBase {
         curve.buy{value: amount}(amount, 0, alice, vm.getBlockTimestamp());
     }
 
-    /// @dev A qualifying close from the curve starts the timer, as a real trade above $100k would.
+    /// @dev A qualifying report from the pool hook starts the timer, as a real trade above $100k would.
     function _startTimer() internal {
         _refreshEligibilityFeeds(); // back to the test's high ETH price, so the close clears $100k
-        vm.prank(address(curve));
+        vm.prank(factory.hook());
         competition.onTradeClose(address(token), ELIG_PRICE, address(0));
         (uint48 firstCloseAt,,,) = competition.eligibilityOf(address(token));
         assertGt(firstCloseAt, 0);

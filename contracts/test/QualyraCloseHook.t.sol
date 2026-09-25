@@ -11,13 +11,9 @@ import {QualyraCompetitionVault} from "../src/QualyraCompetitionVault.sol";
 import {MockV3Aggregator} from "./mocks/MockV3Aggregator.sol";
 import {MockSequencerFeed} from "./mocks/MockSequencerFeed.sol";
 
-/// @notice Integration tests for plan §10 step 4 — the eligibility CLOSE hook wired into the two real
-///         trade sites. Both phases run through the REAL QualyraCompetitionVault (set as the factory's
-///         competitionVault module) so a settled trade genuinely drives `onTradeClose`:
-///           - Pre-graduation: a `QualyraBondingCurve.buy()` settles a CLOSE and the curve reports it.
-///           - Post-graduation: a Uniswap v4 swap settles a CLOSE and the hook's `afterSwap` reports it.
-///         We assert the engine's timer starts (eligibility bookkeeping is exercised end to end). Fund
-///         movement is NOT asserted here — that belongs to the later fee-routing/finalize steps.
+/// @notice How trades reach the eligibility engine. Only the pool hook reports, with the pool's time-weighted
+///         price, and only once that average has a full window of history. Bonding curve trades don't report.
+///         Everything runs through the real QualyraCompetitionVault set as the factory's competitionVault module.
 contract QualyraCloseHookTest is SystemTestBase {
     /// @dev Monday 14 September 2026, 00:00 UTC — matches the other suites for consistency.
     uint256 internal constant MONDAY = 1_789_344_000;
@@ -32,8 +28,6 @@ contract QualyraCloseHookTest is SystemTestBase {
         vm.warp(MONDAY);
         _deployCore();
 
-        // The REAL competition vault is the factory's competitionVault module, so the curve and hook
-        // reach the real eligibility engine through `factory.competitionVault()`.
         competition = new QualyraCompetitionVault(address(factory), makeAddr("operator"), makeAddr("guardian"));
         _initialize(address(competition), makeAddr("burner"), makeAddr("router"));
 
@@ -43,81 +37,81 @@ contract QualyraCloseHookTest is SystemTestBase {
         ethUsd = new MockV3Aggregator(8, int256(2_000e8));
     }
 
-    /// @dev A very high ETH/USD price so any realistic curve/pool spot puts market cap well above the
-    ///      $100k threshold; `setAnswer` also stamps the round fresh at the current block time.
+    /// @dev A very high ETH/USD price so any realistic curve/pool price puts market cap well above the $100k
+    ///      threshold; `setAnswer` also stamps the round fresh at the current block time.
     function _configureHighFeed() internal {
         factory.setPriceFeed(address(0), address(ethUsd), HEARTBEAT); // native ETH -> ETH/USD feed
         ethUsd.setAnswer(int256(1_000_000e8));
     }
 
-    // ---------------------------------------------------------------------------------------------
-    // Phase 1 — bonding curve close
-    // ---------------------------------------------------------------------------------------------
-
-    function test_preGraduationBuy_startsEligibilityTimer() public {
-        _configureHighFeed();
-
-        (QualyraLaunchToken token, QualyraBondingCurve curve) = _launch(address(0), 0);
-
-        // A small (non-graduating) buy settles a CLOSE; the curve reports it to the real engine.
-        vm.prank(alice);
-        curve.buy{value: 1 ether}(1 ether, 0, alice, vm.getBlockTimestamp());
-
-        (uint48 firstCloseAt, bool eligible, bool disqualified,) = competition.eligibilityOf(address(token));
-        assertGt(firstCloseAt, 0, "curve buy CLOSE should start the eligibility timer");
-        assertEq(firstCloseAt, uint48(vm.getBlockTimestamp()));
-        assertFalse(eligible, "not eligible before the 24h window elapses");
-        assertFalse(disqualified);
+    function _firstCloseAt(address token) internal view returns (uint48 firstCloseAt) {
+        (firstCloseAt,,,) = competition.eligibilityOf(token);
     }
 
-    function test_preGraduationSell_reportsClose() public {
-        _configureHighFeed();
+    /// @dev Start of the first window in which the average of a pool created at `createdAt` is ready.
+    function _averageReadyAt(uint256 createdAt) internal view returns (uint256) {
+        uint256 window = hook.TWAP_WINDOW();
+        return (createdAt / window + 2) * window;
+    }
 
+    function test_curveTrades_leaveEligibilityAlone() public {
+        _configureHighFeed();
         (QualyraLaunchToken token, QualyraBondingCurve curve) = _launch(address(0), 0);
 
-        // Buy first so alice has tokens to sell, then sell back — both closes hit the engine.
         vm.prank(alice);
         uint256 tokensOut = curve.buy{value: 2 ether}(2 ether, 0, alice, vm.getBlockTimestamp());
-
         vm.prank(alice);
         token.approve(address(curve), tokensOut);
         vm.prank(alice);
         curve.sell(tokensOut / 2, 0, alice, vm.getBlockTimestamp());
 
-        (uint48 firstCloseAt,,,) = competition.eligibilityOf(address(token));
-        assertGt(firstCloseAt, 0, "curve trades should have driven the engine");
+        assertEq(_firstCloseAt(address(token)), 0, "the curve doesn't report");
     }
 
-    /// @dev With NO price feed configured, every close is NOT-EVALUABLE, so the engine stays a no-op and
-    ///      trading is never blocked (fail-safe). Proves the defensive wiring does not gate trades.
-    function test_preGraduationBuy_noFeed_isNoOp_andTradeSucceeds() public {
-        (QualyraLaunchToken token, QualyraBondingCurve curve) = _launch(address(0), 0);
-
-        vm.prank(alice);
-        uint256 tokensOut = curve.buy{value: 1 ether}(1 ether, 0, alice, vm.getBlockTimestamp());
-        assertGt(tokensOut, 0, "buy must still succeed with no oracle configured");
-
-        (uint48 firstCloseAt,,,) = competition.eligibilityOf(address(token));
-        assertEq(firstCloseAt, 0, "no feed -> NOT-EVALUABLE -> timer never starts");
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Phase 3 — pool (hook) close
-    // ---------------------------------------------------------------------------------------------
-
-    function test_postGraduationSwap_startsEligibilityTimer() public {
-        // Graduate with NO feed configured so the pre-graduation buys are NOT-EVALUABLE and leave the
-        // timer untouched — this isolates the post-graduation hook as the sole cause of the timer start.
-        (QualyraLaunchToken token,, PoolKey memory key) = _graduatedEthLaunch(0);
-
-        (uint48 firstCloseBefore,,,) = competition.eligibilityOf(address(token));
-        assertEq(firstCloseBefore, 0, "no feed during graduation -> timer not started yet");
-
-        // Now configure a high feed and swap on the graduated pool: the hook's afterSwap reports the CLOSE.
+    function test_poolSwaps_reportOnceTheAverageIsReady() public {
         _configureHighFeed();
-        _swap(key, bob, true, -1 ether, 1 ether); // buy token with 1 ETH (exact input)
+        (QualyraLaunchToken token,, PoolKey memory key) = _graduatedEthLaunch(0);
+        uint256 readyAt = _averageReadyAt(vm.getBlockTimestamp());
 
-        (uint48 firstCloseAfter,,,) = competition.eligibilityOf(address(token));
-        assertGt(firstCloseAfter, 0, "hook swap CLOSE should start the eligibility timer");
+        _swap(key, bob, true, -1 ether, 1 ether);
+        assertEq(_firstCloseAt(address(token)), 0, "no report while the average warms up");
+
+        vm.warp(readyAt - 1);
+        ethUsd.setAnswer(int256(1_000_000e8));
+        _swap(key, bob, true, -0.1 ether, 0.1 ether);
+        assertEq(_firstCloseAt(address(token)), 0, "still one second short");
+
+        vm.warp(readyAt);
+        ethUsd.setAnswer(int256(1_000_000e8));
+        _swap(key, bob, true, -0.1 ether, 0.1 ether);
+        assertEq(_firstCloseAt(address(token)), uint48(readyAt), "the first report starts the timer");
+    }
+
+    function test_theReportCarriesTheAverage_notThePriceTheSwapLeft() public {
+        _configureHighFeed();
+        (QualyraLaunchToken token,, PoolKey memory key) = _graduatedEthLaunch(0);
+        vm.warp(_averageReadyAt(vm.getBlockTimestamp()) + 10 minutes);
+        ethUsd.setAnswer(int256(1_000_000e8));
+
+        (uint256 average, bool ready,) = hook.twapOf(address(token));
+        assertTrue(ready);
+        // A large buy moves the pool price a long way; the vault still gets the average from before it.
+        vm.expectCall(
+            address(competition), abi.encodeCall(competition.onTradeClose, (address(token), average, address(0)))
+        );
+        _swap(key, bob, true, -5 ether, 5 ether);
+
+        (uint256 averageAfter,,) = hook.twapOf(address(token));
+        assertEq(averageAfter, average, "the new price carries no weight until time passes");
+    }
+
+    /// @dev With NO price feed configured, every report is NOT-EVALUABLE, so the engine stays a no-op and
+    ///      trading is never blocked (fail-safe).
+    function test_noFeed_isNoOp_andSwapsSucceed() public {
+        (QualyraLaunchToken token,, PoolKey memory key) = _graduatedEthLaunch(0);
+        vm.warp(_averageReadyAt(vm.getBlockTimestamp()));
+
+        _swap(key, bob, true, -1 ether, 1 ether);
+        assertEq(_firstCloseAt(address(token)), 0, "no feed -> NOT-EVALUABLE -> timer never starts");
     }
 }

@@ -707,7 +707,7 @@ export const qualyraCompetitionVaultAbi = [
         "internalType": "address"
       },
       {
-        "name": "duringLiveBattle",
+        "name": "booked",
         "type": "bool",
         "indexed": false,
         "internalType": "bool"
@@ -939,6 +939,25 @@ export const qualyraCompetitionVaultAbi = [
   },
   {
     "type": "function",
+    "name": "belowThresholdSince",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint48",
+        "internalType": "uint48"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "BOOTSTRAP_WEEKS",
     "inputs": [],
     "outputs": [
@@ -1132,6 +1151,19 @@ export const qualyraCompetitionVaultAbi = [
   },
   {
     "type": "function",
+    "name": "DQ_DWELL",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "DRAW_MARGIN",
     "inputs": [],
     "outputs": [
@@ -1257,6 +1289,25 @@ export const qualyraCompetitionVaultAbi = [
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "forcedOutcomeOf",
+    "inputs": [
+      {
+        "name": "battleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "enum QualyraCompetitionVault.Outcome"
       }
     ],
     "stateMutability": "view"
@@ -1525,7 +1576,7 @@ export const qualyraCompetitionVaultAbi = [
         "internalType": "address"
       },
       {
-        "name": "tokenPriceInAsset",
+        "name": "tokenPrice18",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -1607,6 +1658,19 @@ export const qualyraCompetitionVaultAbi = [
       }
     ],
     "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "pokeEligibility",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
