@@ -1,0 +1,25 @@
+{
+  "name": "qualyra-indexer",
+  "version": "1.0.0",
+  "description": "Deterministic, reproducible off-chain indexer for Qualyra battles and weekly leaderboards.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/determinism.test.mjs test/verify.test.mjs test/onchainPrice.test.mjs test/weekBlock.test.mjs test/rpc.test.mjs test/window.test.mjs test/disqualification.test.mjs test/operatorPlan.test.mjs test/operatorService.test.mjs",
+    "index-battle": "node --experimental-strip-types src/cli.ts index-battle",
+    "index-week": "node --experimental-strip-types src/cli.ts index-week",
+    "verify-commit": "node --experimental-strip-types src/cli.ts verify-commit",
+    "operate": "node --experimental-strip-types src/operator/main.ts operate",
+    "keeper": "node --experimental-strip-types src/operator/main.ts keeper",
+    "watch": "node --experimental-strip-types src/operator/main.ts watch",
+    "gen-deployments": "node scripts/gen-deployments.mjs"
+  },
+  "bin": {
+    "qualyra-indexer": "src/cli.ts"
+  },
+  "dependencies": {
+    "viem": "^2.56.5"
+  }
+}

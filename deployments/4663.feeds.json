@@ -1,0 +1,48 @@
+{
+  "chainId": 4663,
+  "network": "robinhood-chain-mainnet",
+  "rpc": "https://rpc.mainnet.chain.robinhood.com",
+  "_status": "PRE-DEPLOY feeds config only. Core contracts are NOT yet deployed on 4663 — this file records the Chainlink price-feed proxies + staleness (heartbeat) config that DeployQualyra.s.sol (_wireFeeds) must read from env vars at mainnet deploy, and that factory.setPriceFeed / setSequencerFeed enforce afterwards. Full contract addresses will be generated into deployments/4663.json from the broadcast files after deployment. No Solidity is changed by this file.",
+  "_heartbeatNote": "Real Chainlink feeds on 4663 update AT LEAST every 86400s (24h) heartbeat (and immediately on the price deviation threshold). The deploy-script default FEED_HEARTBEAT is 3600 (1h) — too tight: it would mark healthy prices stale => oracle NOT-EVALUABLE => the eligibility/battle engine silently freezes (fail-safe: trading/fees/launch/buyback still work). Set every heartbeat >= 86400; 90000 is used here for margin.",
+  "_provenance": "Feed proxy addresses extracted from the official Chainlink registry feeds-robinhood-mainnet.json (58 feeds). ALL 5 feeds verified read-only against the chain via eth_call (description/decimals/latestRoundData) on 2026-09-24: every feed returns decimals=8 and a fresh, sane price. See the verification block for per-feed detail. Note: feed descriptions are NOT uniform (USDG / USD, RHNVDA / USD, Robinhood AAPL / USD, RHSPY / USD) — harmless, the oracle keys feeds by address, not description.",
+  "feeds": {
+    "ethUsd": "0x78F3556b67E17Df817D51Ef5a990cDaF09E8d3A9",
+    "usdg": "0x61B7e5650328764B076A108EFF5fa7282a1B9aD2",
+    "nvda": "0x379EC4f7C378F34a1B47E4F3cbeBCbAC3E8E9F15",
+    "aapl": "0x6B22A786bAa607d76728168703a39Ea9C99f2cD0",
+    "spy": "0x319724394D3A0e3669269846abE664Cd621f9f6A",
+    "sequencerUptimeFeed": "0x0000000000000000000000000000000000000000",
+    "sequencerGracePeriod": 3600,
+    "heartbeats": {
+      "ethUsd": 90000,
+      "usdg": 90000,
+      "nvda": 90000,
+      "aapl": 90000,
+      "spy": 90000
+    },
+    "decimals": {
+      "ethUsd": 8,
+      "usdg": 8,
+      "nvda": 8,
+      "aapl": 8,
+      "spy": 8
+    },
+    "secondaryProxies": {
+      "_comment": "Non-SVR secondaryProxyAddress per asset (Chainlink registry). The primary proxies use 'Shared SVR' (Smart Value Recapture — mainly benefits lending/liquidation OEV). ALL 5 non-SVR proxies verified read-only 2026-09-24: decimals=8 and IDENTICAL price + updatedAt to their SVR primaries (data-equivalent). Qualyra only reads price for a market-cap threshold (no liquidations), so SVR adds no benefit here; the non-SVR proxy is the simpler default, but either set works. Pick ONE set before mainnet — do not mix.",
+      "ethUsd": "0x5058aDee53b04e374d8bEDbAD634Bc4778F50b22",
+      "usdg": "0x901f56689360B89D7767a8acE28B7801e6348fa2",
+      "nvda": "0xCF169363636D73dbBf77733629CB38919d14232d",
+      "aapl": "0x4bDbb3150014c6Ab2C6D9347B0779c49015a2f3f",
+      "spy": "0xa68CA83408bE3f78d1c58a82081c619e9d21486d",
+      "verification": "VERIFIED read-only 2026-09-24 — ethUsd: 'ETH / USD', 8dp, ~$2678.90, fresh ~20m. usdg: 'USDG / USD', 8dp, ~$1.00. nvda: 'RHNVDA / USD', 8dp, ~$224.41. aapl: 'Robinhood AAPL / USD', 8dp, ~$338.10. spy: 'RHSPY / USD', 8dp, ~$766.70. All returned the same round data as the SVR primaries."
+    },
+    "verification": {
+      "ethUsd": "VERIFIED read-only (2026-09): description='ETH / USD', decimals=8, fresh price ~$2661.69",
+      "usdg": "VERIFIED read-only (2026-09-24): description='USDG / USD', decimals=8, price ~$1.00 (99999831), updatedAt ~1h34m ago. OK.",
+      "nvda": "VERIFIED read-only (2026-09-24): description='RHNVDA / USD', decimals=8, price ~$224.41, updatedAt ~29m ago. OK. (us_equities_24/5 feed: pauses nights/weekends -> eligibility freezes off-hours, by design.)",
+      "aapl": "VERIFIED read-only (2026-09-24): description='Robinhood AAPL / USD', decimals=8, price ~$338.10, updatedAt ~55m ago. OK. (us_equities_24/5 feed.)",
+      "spy": "VERIFIED read-only (2026-09-24): description='RHSPY / USD', decimals=8, price ~$766.70, updatedAt ~12h41m ago — still fresh under 24h heartbeat, but would be STALE under the old 3600 (1h) default; live proof the heartbeat must be >= 86400. OK. (us_equities_24/5 feed.)",
+      "sequencerUptimeFeed": "CONFIRMED (2026-09-24): no official Chainlink L2 Sequencer Uptime Feed exists for Robinhood Chain 4663 — not among the 58 price feeds in the registry, and no sequencer uptime proxy is published for this network (it uses Data Streams / push equity feeds). DECISION: keep address(0) => the optional L2 sequencer check is intentionally skipped (fail-safe). The heartbeat/staleness guard still marks prices NOT-EVALUABLE during any downtime, so eligibility/battle stays safe. Revisit only if Robinhood/Chainlink later publish one."
+    }
+  }
+}

@@ -1,0 +1,40 @@
+node_modules/
+.next/
+
+coverage/
+build/
+dist/
+*.log
+.DS_Store
+artifacts/
+cache/
+typechain-types/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+Audit Review Results/
+testnetcontract/
+testnetcontract2/
+Claude outputs/
+.postman/
+postman/
+
+# env files
+.env
+.env.*
+.env.local
+.env.*.local
+*.env
+*.pem
+contracts/.env
+frontend/.env.local
+!.env.example
+!*.env.example
+
+*.tsbuildinfo
+
+
+# temp debug files
+*.txt
+frontend/*.txt
+contracts/*.txt

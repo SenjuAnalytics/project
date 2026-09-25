@@ -1,0 +1,7 @@
+out/
+cache/
+broadcast/
+
+
+# Foundry dependencies: dikunci per-commit di DEPENDENCIES.md, dipulihkan via script/install-deps.{sh,ps1}
+lib/

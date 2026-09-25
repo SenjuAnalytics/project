@@ -1,0 +1,43 @@
+{
+  "name": "frontend",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "sync-abi": "node ../scripts/sync-abi.mjs",
+    "dev": "next dev",
+    "proxy": "node ../scripts/ws-proxy.mjs",
+    "dev:all": "concurrently -k -n proxy,web -c magenta,cyan \"node ../scripts/ws-proxy.mjs\" \"next dev\"",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "postinstall": "node scripts/patch-cuer.js"
+  },
+  "dependencies": {
+    "@rainbow-me/rainbowkit": "^2.2.11",
+    "@tanstack/react-query": "^5.102.8",
+    "framer-motion": "^13.2.0",
+    "lightweight-charts": "^5.2.1",
+    "lucide-react": "^0.511.0",
+    "next": "16.3.5",
+    "next-themes": "^0.4.6",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "viem": "^2.21.0",
+    "wagmi": "^2.12.0",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "concurrently": "^10.0.5",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.5",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "overrides": {
+    "qr": "0.6.0"
+  }
+}

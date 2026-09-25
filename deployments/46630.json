@@ -1,0 +1,60 @@
+{
+  "chainId": 46630,
+  "network": "robinhood-chain-testnet",
+  "deployBlock": 122327405,
+  "generatedFrom": [
+    "contracts/broadcast/DeployQualyra.s.sol/46630/run-latest.json",
+    "contracts/broadcast/DeploySwapRouter.s.sol/46630/run-latest.json",
+    "contracts/broadcast/DeployTestnetUsdgPool.s.sol/46630/run-latest.json"
+  ],
+  "contracts": {
+    "factory": "0xD4b09E6Fc567769E4EEb1e2bd2Ca04950584610c",
+    "launchDeployer": "0xB55aEf20698A6AA09223c915BD48579cB146F235",
+    "feeVault": "0xcc2cFce2f0875680f4102D747f6c9a90964A641E",
+    "competitionVault": "0xfAC6D5ebf4992713b86f2375D39C68F52D522850",
+    "graduationExecutor": "0x86553165c8D986c63E07513d36D7e572eA2aA6e2",
+    "liquidityLocker": "0x7891417ee1a979A22DD0C357b8991cBE43D3E7E9",
+    "buybackBurner": "0x320E3DA0d639C302070aD5d34909a14CFEcbaaF8",
+    "launchRouter": "0x9Ed736580Fe5d927e12372FFefa4e0CBC6078985",
+    "hook": "0x48f5b1aD2F6624222D53ADD2Afe4a4da9Da1E8cC",
+    "swapRouter": "0x68a0B2567fD2F435d49b27229B46f47e2bD2A0B8",
+    "usdg": "0xfd039E717e5f3d2C98332FeebAa1F28ab8961933"
+  },
+  "external": {
+    "poolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951"
+  },
+  "ethUsdgPool": {
+    "fee": 3000,
+    "tickSpacing": 60,
+    "hooks": "0x0000000000000000000000000000000000000000"
+  },
+  "feeds": {
+    "_comment": "TODO placeholders (spec §2.2.1). Fill each address from the Robinhood price-feeds registry (Chainlink Data Feeds portal) PER NETWORK before use — each RWA ticker has its own proxy per deployment and must NOT be hardcoded. address(0) means the oracle treats that price as NOT-EVALUABLE (fail-safe: it never blocks trading). The sequencer uptime feed is required on this Arbitrum-Orbit L2; address(0) disables the L2 check. DEPLOY: DeployQualyra.s.sol (_wireFeeds) reads these at deploy time from env vars FEED_ETH_USD / FEED_USDG / FEED_NVDA / FEED_AAPL / FEED_SPY / SEQUENCER_UPTIME_FEED (+ FEED_HEARTBEAT and SEQUENCER_GRACE_PERIOD); fetch the real proxy addresses from https://docs.robinhood.com/chain (Oracles & Price Feeds) or https://data.chain.link and record the resolved per-network values in this block after deployment.",
+    "ethUsd": "0x0000000000000000000000000000000000000000",
+    "usdg": "0x0000000000000000000000000000000000000000",
+    "nvda": "0x0000000000000000000000000000000000000000",
+    "aapl": "0x0000000000000000000000000000000000000000",
+    "spy": "0x0000000000000000000000000000000000000000",
+    "sequencerUptimeFeed": "0x0000000000000000000000000000000000000000",
+    "sequencerGracePeriod": 3600,
+    "heartbeats": {
+      "ethUsd": 3600,
+      "usdg": 3600,
+      "nvda": 3600,
+      "aapl": 3600,
+      "spy": 3600
+    }
+  },
+  "deployBlocks": {
+    "factory": 122327405,
+    "launchDeployer": 122327422,
+    "feeVault": 122327435,
+    "competitionVault": 122327449,
+    "graduationExecutor": 122327453,
+    "liquidityLocker": 122327464,
+    "buybackBurner": 122327476,
+    "launchRouter": 122327485,
+    "swapRouter": 122331513,
+    "usdg": 122432200
+  }
+}
