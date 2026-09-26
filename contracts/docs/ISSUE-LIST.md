@@ -350,18 +350,42 @@ menampilkan reserve palsu.
 
 ### Q-11 — Indexer: `PAIR_ASSETS` hardcoded **[Rendah — opsional]**
 
-**Bukti.** `indexer/src/config.ts:177` mendaftar ETH/USDG/NVDA/AAPL/SPY beserta harga USD-nya.
+> **Status: item 1 (jalur `Swapped`) SELESAI** — lihat "Bagian 0" di bawah. Item 2 & 3 masih terbuka.
+
+**Bagian 0 — bug turunan yang ditemukan saat menulis Q-11 (SUDAH DIPERBAIKI).**
+`Swapped` — event trade pool pasca-graduasi dari `QualyraSwapRouter` (`:37-44`, `:111`) — **tidak
+punya field `quoteAsset`**, tapi `ingest.ts` membacanya sebagai `l.quoteAsset` yang **tidak pernah
+diisi siapa pun**. Akibatnya quote asset setiap trade pool = `""` → `tradeUsdMicro` (`qualifiedVolume.ts:48`)
+mengembalikan `0n` → trade dibuang oleh filter `minTradeUsd` → **seluruh volume pasca-graduasi tidak
+pernah masuk Qualified Volume**, padahal justru trade itulah yang masuk `filteredTrades` →
+`datasetHash`/`resultHash` yang di-commit on-chain lewat `proposeBattleResult`/`proposeWeeklyWinners`.
+Artinya hash skoring dihitung dari trade yang tidak lengkap — dan menghitung ulang dengan logika yang
+benar setelahnya akan menghasilkan hash yang berbeda dari yang tersimpan on-chain.
+
+**Perbaikan (sudah dikerjakan).** Pair asset tidak lagi dibaca dari log, tapi **di-resolve dari
+catatan launch** milik token itu (`TokenLaunched` → `token → quoteAsset`, helper `tokenQuoteMap`),
+sumber yang sama yang sudah dipakai jalur curve (`Bought`/`Sold` lewat alamat curve). Graduation
+memakai pair yang sama dengan launch, jadi pair asset sebuah token tidak pernah berubah. Token yang
+tidak dikenal tetap **dilewati**, bukan ditebak harganya. Test: `indexer/test/ingestNormalize.test.mjs`
+(9 test, termasuk bukti volume pool akhirnya masuk QV).
+
+**Bukti (asli).** `indexer/src/config.ts:177` mendaftar ETH/USDG/NVDA/AAPL/SPY beserta harga USD-nya.
 Token dengan aset pair di luar daftar itu tidak dapat basis USD → tidak bisa dihitung Qualified
 Volume-nya.
 
 **Dampak.** Aset pair di luar daftar itu tidak punya basis USD → token-nya tidak muncul di
-leaderboard/scoring; kalau nanti dibuat fallback $1, hadiah akan salah hitung (lihat Q-9).
-Hari ini tidak terasa karena semua pair aktif (ETH/USDG/NVDA/AAPL/SPY) ada di daftar.
+leaderboard/scoring; kalau nanti dibuat fallback $1, hadiah akan salah hitung (lihat Q-9). Dua jalur
+kode juga **berbeda perilaku untuk aset tak dikenal**: `ingest.ts:60-64` `normalizeQuote` memetakannya
+ke `address(0)` (dihargai sebagai ETH — angka karangan), sedangkan `qualifiedVolume.ts:46-48`
+menolaknya (`0n`). Keduanya senyap.
 
-**Saran perbaikan.** Baca daftar pair dari factory (`quoteAssetCount`/`quoteAssetAt`/
-`quoteAssetConfig`) + registry basis USD eksplisit per aset (Chainlink untuk yang punya feed,
-harga anchored untuk yang tidak). **Fail-closed**: aset tanpa basis USD diberi tanda "dikecualikan",
-bukan diberi harga 1 dolar.
+**Saran perbaikan (sisa).**
+1. ~~Resolve pair asset trade pool dari catatan launch~~ — **selesai** (di atas).
+2. Baca daftar pair dari factory (`quoteAssetCount`/`quoteAssetAt`/`quoteAssetConfig`), bukan alamat
+   yang ditulis tangan. Harga tetap konstanta env-overridable — itu disengaja untuk reproducibility
+   (`ConstantPriceProvider.snapshot()` ikut masuk `datasetHash`).
+3. **Fail-closed**: aset tanpa basis USD ditandai "dikecualikan" secara eksplisit, `normalizeQuote`
+   berhenti memetakan aset tak dikenal ke ETH, dan UI/leaderboard menampilkan "—" (lihat Q-9).
 
 ---
 
