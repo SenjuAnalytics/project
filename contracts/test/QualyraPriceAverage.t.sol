@@ -263,4 +263,43 @@ contract QualyraPriceAverageTest is CompetitionTestBase {
         assertTrue(disqualified);
         assertEq(disqualifiedAt, droppedAt);
     }
+
+    /// @notice A pool nobody trades for MAX_PRICE_AGE loses its vote: the average reports not-ready (not-evaluable),
+    ///         so a dead market's last price can neither start a timer nor disqualify a token. A swap wakes it up.
+    function test_averageGoesNotReadyWhenThePoolGoesQuiet() public {
+        uint256 lastSwapAt = createdAt;
+
+        vm.warp(_readyAt());
+        (uint256 price, bool ready, uint256 updatedAt) = hook.twapOf(address(token));
+        assertGt(price, 0);
+        assertTrue(ready);
+        assertEq(updatedAt, lastSwapAt);
+
+        // Right on the limit the last price still counts; one second later the pool stops reporting.
+        vm.warp(lastSwapAt + hook.MAX_PRICE_AGE());
+        (, ready,) = hook.twapOf(address(token));
+        assertTrue(ready, "inside the limit the held price still counts");
+
+        vm.warp(lastSwapAt + hook.MAX_PRICE_AGE() + 1);
+        (price, ready, updatedAt) = hook.twapOf(address(token));
+        assertGt(price, 0, "the price is still computed, it is only reported as not-ready");
+        assertFalse(ready, "a week without a trade makes the pool not-evaluable");
+        assertEq(updatedAt, lastSwapAt, "the last trade is still reported for the vault's own staleness rules");
+
+        _refreshEligibilityFeeds();
+        _swap(key, bob, true, -0.1 ether, 0.1 ether);
+        (, ready,) = hook.twapOf(address(token));
+        assertTrue(ready, "trading again brings the pool's vote back");
+    }
+
+    /// @notice The vault's pending-expiry rule reads the same staleness: after PENDING_EXPIRY a graduated token whose
+    ///         pool has gone quiet counts as done (a warm-up is the one honest excuse for no report).
+    function test_pendingExpiry_afterGraduationAQuietPoolCountsAsDone() public {
+        vm.warp(createdAt + competition.PENDING_EXPIRY());
+
+        (, bool ready, uint256 updatedAt) = hook.twapOf(address(token));
+        assertFalse(ready, "no swap since graduation, so the pool lost its vote long ago");
+        assertEq(updatedAt, createdAt);
+        assertTrue(competition.isPendingExpired(address(token)), "a quiet pool is done; a warming-up pool is not");
+    }
 }

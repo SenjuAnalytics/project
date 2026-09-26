@@ -211,10 +211,14 @@ contract QualyraFeeVault is ReentrancyGuard {
             return;
         }
 
-        if (firstCloseAt == 0 && block.timestamp >= launchedAt + QualyraFees.PENDING_EXPIRY) {
-            // Pending expiry (mirrors QualyraCompetitionVault.isPendingExpired): the token let PENDING_EXPIRY pass
-            // without ever starting its eligibility timer, so it stops building a battle pot. Its battle share is
-            // treasury, and whatever it parked before follows once.
+        if (
+            firstCloseAt == 0 && block.timestamp >= launchedAt + QualyraFees.PENDING_EXPIRY
+                && competition.isPendingExpired(token)
+        ) {
+            // Pending expiry, decided by the competition vault's own `isPendingExpired` so both sides always agree
+            // on one definition (it also excuses a pool that is still warming up right after graduation): the token
+            // let PENDING_EXPIRY pass without ever starting its eligibility timer, so it stops building a battle
+            // pot. Its battle share is treasury, and whatever it parked before follows once.
             treasuryBalance[asset] += battleShare;
             _fundLeague(competition, asset, leagueShare);
             if (competition.pendingBattlePot(token, asset) != 0) {

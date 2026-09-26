@@ -26,6 +26,13 @@
   the vault treats like any other not-evaluable case.
 - **Threshold:** a single $100k line. The $90k lower band from section 5 was left out: a token could
   sit at $95k indefinitely, which contradicts the rule that it has to hold $100k.
+- **Staleness (`MAX_PRICE_AGE` = 7 days):** a pool nobody has traded for a week reports not-ready, exactly
+  like a warming-up pool, so the average can neither start a timer nor disqualify a token. The average would
+  otherwise keep repeating the price of a dead market, and with the dollar side always fresh that price alone
+  could make a token eligible or disqualify it. Deliberate consequence: pair-asset drift can't DQ a dormant
+  token; its parked pending pot is solved by the expiry path instead (30 days with no timer, 120 days when
+  the timer started but never resolved, or as soon as a graduated token's pool goes stale past `PENDING_EXPIRY`).
+  Boundary: right on `lastSwapAt + MAX_PRICE_AGE` the price still counts, one second later it doesn't.
 - **Dwell:** `DQ_DWELL` is 30 minutes. The first report below $100k opens a drop and records `belowSince`
   (packed into `Eligibility`, readable through `belowThresholdSince(token)`). A report still below 30
   minutes after that disqualifies the token, and `disqualifiedAt` is set to `belowSince`. A drop only ends
@@ -199,10 +206,10 @@ The dead zone `$90k–$100k` prevents a marginal poke around exactly `$100k` fro
 | Case | Behavior |
 |---|---|
 | Freshly graduated / accumulator warming up (`now - startedAt < window`) | `consultTwap` returns `ok=false` → hook skips `onTradeClose` → NOT-EVALUABLE (no timer, no DQ). Never `mc=0`. |
-| Dormant token (no trades for a long time) | Next trade accumulates `lastPrice × largeDt` → TWAP dominated by the long-held price. A single late dump can't crater the average. Desired resistance. |
+| Dormant token (no trades for a long time) | Next trade accumulates `lastPrice × largeDt` → TWAP dominated by the long-held price. A single late dump can't crater the average. Desired resistance. Past `MAX_PRICE_AGE` (7 days) the pool reports not-ready instead, so no money decision is made on a price of unknown age (Q-3). |
 | Oracle NOT-EVALUABLE (stock-feed pause, sequencer) | Unchanged: `onTradeClose` no-ops (`_marketCapUsd` returns `ok=false`). TWAP tracks token-in-asset price only; USD conversion still gated by the feed. **TWAP does not fix the pause freeze** — that is a separate decision (schedule battles outside pauses, or a permissionless poke). |
 | Same-block trades | Accumulate once (`dt==0` short-circuit) → no double gas. |
-| `eligible` + idle (sticky eligibility) | Still not re-checked outside a battle. Optionally add a TWAP re-validation at `scheduleBattles` (see §8, open decision). |
+| `eligible` + idle (sticky eligibility) | **Resolved (Q-14).** The rule now runs continuously from the timer's start until the token's battle is over — queued, booked and live tokens included — so an eligible token that drops below $100k is disqualified before it battles. Implemented in the vault and covered by tests; see §0 "When the rule applies". |
 
 ---
 
@@ -224,7 +231,7 @@ Real per-trade gas today: pool `swapExactIn` median **280,040**, curve `buy` med
 3. **Accumulator scope**: Option A (pool only) vs B (curve + pool). Recommend **A**.
 4. **consult mode**: rolling checkpoint (recommended) vs ring buffer (exact window).
 5. **Arithmetic vs geometric** mean. Recommend arithmetic first.
-6. **Sticky eligibility**: re-validate MC (via TWAP) at `scheduleBattles`? (closes the pump→eligible→dump→battle path).
+6. ~~**Sticky eligibility**~~ — **decided and implemented**: the $100k rule runs continuously from the timer's start until the battle's 24 hours are over (§0). The `scheduleBattles` re-validation was not needed on top of that.
 7. **Oracle-pause freeze**: accept, or add permissionless `poke(token)` (TWAP-gated).
 
 ---

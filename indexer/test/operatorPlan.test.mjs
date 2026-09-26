@@ -10,6 +10,7 @@ import {
   DAY,
   battlesAwaitingResult,
   battlesInChallenge,
+  battlesToExpire,
   battlesToFinalize,
   bookableTokens,
   bookingOpen,
@@ -22,6 +23,7 @@ import {
   tranchesDue,
   weeksAwaitingWinners,
   weeksToFinalize,
+  weeksToSkip,
 } from "../src/operator/plan.ts";
 import { weekEnd } from "../src/leaderboard.ts";
 import { OUTCOME } from "../src/config.ts";
@@ -117,6 +119,7 @@ const token = (over = {}) => ({
   eligible: true,
   disqualified: false,
   hasBattled: false,
+  firstCloseAt: 0,
   belowThresholdSince: 0,
   averageReady: true,
   lastSwapAt: 0,
@@ -213,4 +216,62 @@ test("sweeps cover tokens with parked fees; releases cover expired pending pots 
     expiredPendingToRelease(list).map(t => t.token),
     ["0x2"],
   );
+});
+
+test("a battle with no result can be expired after the grace period, a reported one cannot", () => {
+  const now = MIDNIGHT + 10 * DAY;
+  const list = [
+    battle({ id: 1, startTime: now - DAY - 3 * DAY + 1 }), // grace still running
+    battle({ id: 2, startTime: now - DAY - 3 * DAY }), // opens exactly now
+    battle({ id: 3, startTime: now - 6 * DAY }), // long past the grace
+    battle({ id: 4, startTime: now - 6 * DAY, outcome: OUTCOME.WinnerA }), // reported: finalize path
+    battle({ id: 5, startTime: now - 6 * DAY, finalized: true, outcome: OUTCOME.Void }), // already closed
+  ];
+  assert.deepEqual(
+    battlesToExpire(list, now).map(b => b.id),
+    [2, 3],
+  );
+});
+
+test("a league week with no winners is skippable after the grace period, a proposed one is not", () => {
+  const open11 = Number(weekEnd(11n)) + 14 * DAY;
+  const openAt = Number(weekEnd(12n)) + 14 * DAY;
+  const weeks = [
+    { week: 11, proposedAt: 0, finalizedAt: 0, closed: false },
+    { week: 12, proposedAt: 0, finalizedAt: 0, closed: false },
+    { week: 13, proposedAt: openAt - DAY, finalizedAt: 0, closed: false }, // pending proposal
+    { week: 14, proposedAt: 0, finalizedAt: openAt, closed: false }, // already settled
+  ];
+  assert.deepEqual(weeksToSkip(0, weeks, openAt), []);
+  // Each week opens its own skip deadline, grace after that week's own end.
+  assert.deepEqual(
+    weeksToSkip(11, weeks, open11 - 1).map(w => w.week),
+    [],
+  );
+  assert.deepEqual(
+    weeksToSkip(11, weeks, open11).map(w => w.week),
+    [11],
+  );
+  assert.deepEqual(
+    weeksToSkip(11, weeks, openAt).map(w => w.week),
+    [11, 12],
+  );
+});
+
+test("a token whose timer started but never resolved is poked, so the story ends either way", () => {
+  const now = MIDNIGHT + 20 * 3600;
+  const quiet = { lastSwapAt: now - 3600 };
+  const limbo = token({ token: "0x9", eligible: false, firstCloseAt: now - 2 * DAY, ...quiet });
+  const list = [
+    limbo,
+    // Eligible and not in booking hours: the normal rules already cover it, so limbo adds nothing.
+    token({ token: "0x8", firstCloseAt: now - 5 * DAY, ...quiet }),
+    // Already resolved: no longer limbo.
+    token({ token: "0x7", firstCloseAt: now - 5 * DAY, ...quiet }),
+    token({ token: "0x6", eligible: false, firstCloseAt: now - 2 * DAY, hasBattled: true, ...quiet }),
+  ];
+  const pick = opts => tokensToPoke(list, [], now, { quietSeconds: 600, lastPokeAt: {}, ...opts }).map(t => t.token);
+  assert.deepEqual(pick({ bookingOpen: false }), ["0x9"]);
+  // Booking open: the eligible token is picked by the normal rule too, the limbo one only once.
+  assert.deepEqual(pick({ bookingOpen: true }), ["0x9", "0x8", "0x7"]);
 });

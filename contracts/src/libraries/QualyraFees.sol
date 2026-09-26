@@ -10,6 +10,13 @@ library QualyraFees {
     ///         of its fees goes to the treasury instead of waiting for a battle it is unlikely to reach.
     uint256 internal constant PENDING_EXPIRY = 30 days;
 
+    /// @notice How long a pool's last price may go without being refreshed by a swap before it stops counting.
+    ///         The hook keeps holding the last price while a pool is quiet, which is what makes a single late dump
+    ///         unable to crater the average. Held for too long it becomes the opposite problem: the dollar value of
+    ///         a token nobody is trading would still move with its pair asset, and that alone could make the token
+    ///         eligible or disqualify it. Shared so the hook's average and the vault's pending expiry agree.
+    uint256 internal constant PRICE_STALENESS_LIMIT = 7 days;
+
     /// @notice Trading fee charged on the pair asset side of every trade.
     uint256 internal constant TRADE_FEE_BPS = 100;
 

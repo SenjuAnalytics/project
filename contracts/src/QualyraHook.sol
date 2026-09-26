@@ -70,6 +70,12 @@ contract QualyraHook is IHooks, IUnlockCallback {
     ///         full window and the current one so far, so it always spans between 30 and 60 minutes.
     uint256 public constant TWAP_WINDOW = 30 minutes;
 
+    /// @notice How long the last price may go without a swap before the average stops reporting. A quiet pool keeps
+    ///         its last price, so a single late dump can't crater the average; but a price nobody is trading should
+    ///         not decide who reaches the market-cap threshold either. Past this, the average reports not-ready,
+    ///         which every consumer already treats as not-evaluable (no timer, no disqualification, never a revert).
+    uint256 public constant MAX_PRICE_AGE = QualyraFees.PRICE_STALENESS_LIMIT;
+
     IPoolManager public immutable poolManager;
     IQualyraFactory public immutable factory;
 
@@ -159,14 +165,18 @@ contract QualyraHook is IHooks, IUnlockCallback {
 
     /// @notice Time-weighted pool price of `token` over the last full TWAP_WINDOW and the current one so far: whole
     ///         pair asset units per whole token, 18-decimal fixed point, whatever the asset's own decimals. `ready`
-    ///         stays false until the pool has a full window of history, 30 to 60 minutes after graduation.
-    ///         `updatedAt` is when the pool last traded.
+    ///         stays false until the pool has a full window of history, 30 to 60 minutes after graduation, and
+    ///         again once the pool has gone MAX_PRICE_AGE without a swap. `updatedAt` is when the pool last traded.
     function twapOf(address token) external view returns (uint256 price18, bool ready, uint256 updatedAt) {
         PriceObservation memory o = _observations[token];
         if (o.lastTime == 0) return (0, false, 0);
         (uint256 previousSum, uint256 currentSum) = _sumsAt(o, block.timestamp);
         (price18, ready) = _average(previousSum, currentSum, o.readyWindow);
         updatedAt = o.lastTime;
+        // A pool nobody has traded for a week loses its vote. The average would otherwise keep repeating the price
+        // of a dead market, and with the dollar side always fresh that price alone could make a token eligible or
+        // disqualify it. Reported exactly like a warming-up pool: not-evaluable, so nothing downstream decides on it.
+        if (ready && block.timestamp > uint256(o.lastTime) + MAX_PRICE_AGE) ready = false;
     }
 
     /// @notice Moves fees accrued for `token` during `battleId` (zero outside battles) to the fee vault.

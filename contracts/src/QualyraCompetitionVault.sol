@@ -114,6 +114,18 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     /// @notice How long after launch a token may go without starting its eligibility timer. Past that, its pending
     ///         battle pot is released to the treasury and new battle shares go there too, until the timer starts.
     uint256 public constant PENDING_EXPIRY = QualyraFees.PENDING_EXPIRY;
+    /// @notice Extra grace on top of PENDING_EXPIRY for a token whose timer did start but never resolved: it never
+    ///         held the threshold for the full window and no trade ever confirmed a drop long enough to disqualify
+    ///         it. Until then it is still a candidate; past it, it stops waiting for a battle it cannot reach.
+    uint256 public constant UNRESOLVED_PENDING_GRACE = 90 days;
+    /// @notice How long a finished battle may go with no result posted before anyone can close it as a Void. The
+    ///         operator service normally posts within minutes; this is the way out if it is down for good, so a pot
+    ///         can never be locked by silence. Void refunds each token its own contribution — the fallback may not
+    ///         crown a winner nobody scored.
+    uint256 public constant BATTLE_RESULT_GRACE = 72 hours;
+    /// @notice How long a finished league week may go with no winners posted before anyone can skip it and move its
+    ///         pool to the week in progress. Same reason as above, for the weekly prizes.
+    uint256 public constant LEAGUE_SKIP_GRACE = 14 days;
 
     /// @dev Unix time 0 fell on a Thursday. Shifting by three days puts every week boundary on Monday 00:00 UTC.
     uint256 private constant WEEK_SHIFT = 3 days;
@@ -170,6 +182,9 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         uint256 endTime
     );
     event BattleCanceled(uint256 indexed battleId);
+    /// @notice A battle nobody ever reported was closed as a Void after BATTLE_RESULT_GRACE; each token was refunded
+    ///         its own contribution.
+    event BattleExpired(uint256 indexed battleId);
     event BattlePotIncreased(uint256 indexed battleId, address indexed token, uint256 amount);
     event PendingBattlePotIncreased(address indexed token, address indexed asset, uint256 amount);
     event BattlePotSeeded(uint256 indexed battleId, address indexed token, address indexed asset, uint256 amount);
@@ -183,6 +198,9 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     event WeeklyWinnersProposed(uint256 indexed week, address[5] winners, bytes32 datasetHash, bytes32 resultHash);
     event WeeklyWinnersVetoed(uint256 indexed week);
     event WeekFinalized(uint256 indexed week);
+    /// @notice A finished week nobody reported winners for was skipped after LEAGUE_SKIP_GRACE; its pool moved to
+    ///         `toWeek`.
+    event WeekSkipped(uint256 indexed week, uint256 indexed toWeek);
     event PrizeClaimed(uint256 indexed week, uint256 indexed rank, address indexed winner, address asset, uint256 amount);
     event UnclaimedRolledOver(uint256 indexed week, uint256 indexed toWeek, address indexed asset, uint256 amount);
     event OperatorSet(address indexed operator);
@@ -240,6 +258,10 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
     error NotEligible(address token);
     /// @notice `releaseExpiredPending` was called for a token that is not past PENDING_EXPIRY without a timer.
     error PendingNotExpired(address token);
+    /// @notice `expireBattle` was called before the battle went BATTLE_RESULT_GRACE past its live window.
+    error BattleNotExpired();
+    /// @notice `skipWeek` was called before the week went LEAGUE_SKIP_GRACE past its end.
+    error WeekSkipTooEarly();
 
     modifier onlyAdmin() {
         if (msg.sender != factory.owner()) revert Unauthorized();
@@ -560,35 +582,24 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         if (outcome == Outcome.None || battle.finalized) revert NoPendingResult();
         if (block.timestamp < uint256(battle.proposedAt) + BATTLE_CHALLENGE_PERIOD) revert ChallengePeriodActive();
 
-        // Fees tagged to the battle (from its schedule to the end of the live window) may still be held by the
-        // hook. Collecting them first completes the pot.
-        IQualyraHook hook = IQualyraHook(factory.hook());
-        hook.sweepFees(battle.tokenA, battleId);
-        hook.sweepFees(battle.tokenB, battleId);
+        _settle(battleId, outcome);
+    }
 
-        battle.finalized = true;
-        uint256 pot = battle.pot;
-        address asset = battle.asset;
-
-        if (outcome == Outcome.WinnerA || outcome == Outcome.DisqualifiedB) {
-            // A wins — a scored win, or B disqualified (including "both gone, A survived" via DisqualifiedB):
-            // the whole pot buys back and burns A.
-            _fundBuyback(battleId, battle.tokenA, asset, pot);
-        } else if (outcome == Outcome.WinnerB || outcome == Outcome.DisqualifiedA) {
-            // B wins — a scored win, or A disqualified (including "both gone, B survived" via DisqualifiedA).
-            _fundBuyback(battleId, battle.tokenB, asset, pot);
-        } else {
-            // Draw or Void (spec §5.4/§5.5): there is no winner, so each token is refunded exactly its own
-            // contribution — buyback&burn of its own token (A->A, B->B). Never a 50/50 split, never the Trader
-            // League. Every pot increment was mirrored into contributionOf, so the two contributions sum to the
-            // pot; any rounding remainder is routed deterministically to tokenA so the whole pot is distributed.
-            uint256 refundA = contributionOf[battleId][battle.tokenA];
-            if (refundA > pot) refundA = pot;
-            _fundBuyback(battleId, battle.tokenA, asset, refundA);
-            _fundBuyback(battleId, battle.tokenB, asset, pot - refundA);
+    /// @notice Closes a battle that never got a result, BATTLE_RESULT_GRACE after its live window ended. Anyone can
+    ///         call it: the pot has to have a way out even if the operator service never comes back. The battle is
+    ///         settled as a Void, which refunds each token its own contribution (buyback&burn of its own token) and
+    ///         crowns nobody — a fallback that runs without scores may not pick a winner. Once expired, a late result
+    ///         is refused like a second one would be.
+    function expireBattle(uint256 battleId) external nonReentrant whenNotPaused notMigrated {
+        Battle storage battle = _battles[battleId];
+        if (battle.tokenA == address(0) || battle.finalized) revert UnknownBattle();
+        if (battle.outcome != Outcome.None) revert NoPendingResult();
+        if (block.timestamp < uint256(battle.startTime) + BATTLE_DURATION + BATTLE_RESULT_GRACE) {
+            revert BattleNotExpired();
         }
 
-        emit BattleFinalized(battleId, outcome, pot);
+        emit BattleExpired(battleId);
+        _settle(battleId, Outcome.Void);
     }
 
     /// @notice Calls off a booked battle before it starts. Both tokens get their battle back and whatever the pot
@@ -723,6 +734,33 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         emit WeekFinalized(week);
     }
 
+    /// @notice Moves a finished week's pool forward when nobody ever proposed winners for it, so the league never
+    ///         stalls on one missing result and no prize money sits in a week that can never be paid. Anyone can
+    ///         call it LEAGUE_SKIP_GRACE after the week ended. The pool follows the same route `finalizeWeek` gives
+    ///         an unassigned pool: it joins the week in progress. Nobody can claim for a skipped week, so this
+    ///         cannot be used to pay oneself.
+    function skipWeek(uint256 week) external whenNotPaused notMigrated {
+        if (firstLeagueWeek == 0 || week < firstLeagueWeek) revert WeekNotInLeague();
+        if (block.timestamp < weekEndsAt(week) + LEAGUE_SKIP_GRACE) revert WeekSkipTooEarly();
+
+        WeekResult storage result = _weekResults[week];
+        if (result.finalizedAt != 0) revert NoPendingResult();
+        // A pending proposal means the normal path (challenge period, then finalizeWeek) is what should run.
+        if (result.proposedAt != 0) revert ResultAlreadyProposed();
+
+        result.finalizedAt = SafeCast.toUint48(block.timestamp);
+        uint256 toWeek = currentWeek();
+        for (uint256 i; i < _assets.length; ++i) {
+            address asset = _assets[i];
+            uint256 pool = weekPool[week][asset];
+            if (pool == 0) continue;
+            weekPool[toWeek][asset] += pool;
+            emit LeagueFunded(toWeek, asset, pool);
+        }
+
+        emit WeekSkipped(week, toWeek);
+    }
+
     /// @notice Pays the prize of place `rank` (0 is first place) in each of `assets`. Anyone can call it and
     ///         the prize always goes to the winning wallet. Assets already paid are skipped, and assets are
     ///         claimed separately, so an asset whose transfers are halted by its issuer does not hold up the others.
@@ -762,7 +800,14 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         result.closed = true;
 
         address[5] memory winners = result.winners;
+        // Never roll into a week whose claims are already open: with its prizes assigned, `claim` would refuse the
+        // funds and a later rollover of that week would count them as claimed, so they would have no way out.
+        // Only weeks that are over can be finalized, so the week in progress is never one of them and this loop
+        // ends after at most one extra step.
         uint256 toWeek = currentWeek();
+        while (_weekResults[toWeek].finalizedAt != 0) {
+            ++toWeek;
+        }
 
         for (uint256 i; i < _assets.length; ++i) {
             address asset = _assets[i];
@@ -879,18 +924,33 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         return _disqualificationOutcome(battle.tokenA, battle.tokenB, uint256(battle.startTime) + BATTLE_DURATION);
     }
 
-    /// @notice Whether `token` went PENDING_EXPIRY since launch without starting its eligibility timer. A token
-    ///         that ever started the timer, which includes every eligible, disqualified or battled token, never
-    ///         expires.
+    /// @notice Whether `token` stops waiting for a battle it cannot reach, so its pending battle pot may be released
+    ///         to the treasury (`releaseExpiredPending`, or the fee vault on the token's next fee). A token that has
+    ///         resolved one way or another — eligible, disqualified, or already battled — never expires.
+    ///
+    ///         Two ways to expire:
+    ///         - no timer: PENDING_EXPIRY passed since launch without a first qualifying close. Its pool only
+    ///           reports once the price average is ready, so a token that graduated at the last moment gets that
+    ///           warm-up to start its timer. A pool that has gone stale reports not-ready too, and there the excuse
+    ///           has run out: a price nobody trades is not a reason to keep holding funds.
+    ///         - unresolved: the timer started but the token never held the threshold for the full window and no
+    ///           trade ever confirmed a long-enough drop to disqualify it. After UNRESOLVED_PENDING_GRACE it stops
+    ///           waiting. Without this a quiet pool could leave an unresolved token accumulating fees forever.
     function isPendingExpired(address token) public view returns (bool) {
-        if (_eligibility[token].firstCloseAt != 0) return false;
+        Eligibility storage e = _eligibility[token];
         IQualyraFactory.Launch memory launch = factory.getLaunch(token);
-        if (launch.launchedAt == 0 || block.timestamp < uint256(launch.launchedAt) + PENDING_EXPIRY) return false;
-        // Its pool only reports once the price average is ready, 30 to 60 minutes after graduation, so a token that
-        // graduated at the last moment gets that long to start its timer.
+        if (launch.launchedAt == 0) return false;
+        if (e.disqualified || e.eligible || hasBattled[token]) return false;
+
+        if (e.firstCloseAt != 0) {
+            return block.timestamp >= uint256(launch.launchedAt) + PENDING_EXPIRY + UNRESOLVED_PENDING_GRACE;
+        }
+        if (block.timestamp < uint256(launch.launchedAt) + PENDING_EXPIRY) return false;
         if (!launch.graduated) return true;
-        (, bool ready,) = IQualyraHook(factory.hook()).twapOf(token);
-        return ready;
+        // `ready` covers the post-graduation warm-up; a last swap older than the staleness limit is the other,
+        // opposite case: the pool is not warming up, it is done.
+        (, bool ready, uint256 updatedAt) = IQualyraHook(factory.hook()).twapOf(token);
+        return ready || (updatedAt != 0 && block.timestamp > updatedAt + QualyraFees.PRICE_STALENESS_LIMIT);
     }
 
     function scheduleOf(address token) external view returns (Schedule memory) {
@@ -1047,6 +1107,48 @@ contract QualyraCompetitionVault is Pausable, ReentrancyGuard {
         if (week < firstWeek) week = firstWeek;
         weekPool[week][asset] += amount;
         emit LeagueFunded(week, asset, amount);
+    }
+
+    /// @dev Closes a battle and hands out its pot. Shared by `finalizeBattle` (the operator posted a result and it
+    ///      survived the challenge period) and `expireBattle` (nobody ever did, so it is settled as a Void).
+    ///      Fees tagged to the battle (from its schedule to the end of the live window) may still be held by the
+    ///      hook; collecting them first completes the pot. Neither token can battle again after this, so anything
+    ///      still parked for them can only go to the treasury — `_drainPendingToTreasury` is a no-op when there is
+    ///      nothing, which is the normal case.
+    function _settle(uint256 battleId, Outcome outcome) private {
+        Battle storage battle = _battles[battleId];
+
+        IQualyraHook hook = IQualyraHook(factory.hook());
+        hook.sweepFees(battle.tokenA, battleId);
+        hook.sweepFees(battle.tokenB, battleId);
+
+        battle.finalized = true;
+        battle.outcome = outcome;
+        uint256 pot = battle.pot;
+        address asset = battle.asset;
+
+        if (outcome == Outcome.WinnerA || outcome == Outcome.DisqualifiedB) {
+            // A wins — a scored win, or B disqualified (including "both gone, A survived" via DisqualifiedB):
+            // the whole pot buys back and burns A.
+            _fundBuyback(battleId, battle.tokenA, asset, pot);
+        } else if (outcome == Outcome.WinnerB || outcome == Outcome.DisqualifiedA) {
+            // B wins — a scored win, or A disqualified (including "both gone, B survived" via DisqualifiedA).
+            _fundBuyback(battleId, battle.tokenB, asset, pot);
+        } else {
+            // Draw or Void (spec §5.4/§5.5): there is no winner, so each token is refunded exactly its own
+            // contribution — buyback&burn of its own token (A->A, B->B). Never a 50/50 split, never the Trader
+            // League. Every pot increment was mirrored into contributionOf, so the two contributions sum to the
+            // pot; any rounding remainder is routed deterministically to tokenA so the whole pot is distributed.
+            uint256 refundA = contributionOf[battleId][battle.tokenA];
+            if (refundA > pot) refundA = pot;
+            _fundBuyback(battleId, battle.tokenA, asset, refundA);
+            _fundBuyback(battleId, battle.tokenB, asset, pot - refundA);
+        }
+
+        _drainPendingToTreasury(battle.tokenA, asset);
+        _drainPendingToTreasury(battle.tokenB, asset);
+
+        emit BattleFinalized(battleId, outcome, pot);
     }
 
     function _fundBuyback(uint256 battleId, address token, address asset, uint256 amount) private {

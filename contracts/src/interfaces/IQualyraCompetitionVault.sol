@@ -44,6 +44,9 @@ interface IQualyraCompetitionVault {
     /// @notice Sends the pending battle pot of a token past its pending expiry without an eligibility timer to the
     ///         treasury.
     function releaseExpiredPending(address token, address asset) external;
+    /// @notice Whether `token` stops waiting for a battle it cannot reach, so its pending pot may be released to the
+    ///         treasury. The single definition of the rule: the fee vault routes on this rather than mirroring it.
+    function isPendingExpired(address token) external view returns (bool);
     function paused() external view returns (bool);
     function depositBattleFees(uint256 battleId, address token, address asset, uint256 amount) external payable;
     function depositLeagueFees(address asset, uint256 amount) external payable;

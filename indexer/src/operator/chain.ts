@@ -217,6 +217,7 @@ export async function readTokens(
         asset: t.asset,
         eligible: eligibility[1],
         disqualified: eligibility[2],
+        firstCloseAt: Number(eligibility[0]),
         belowThresholdSince: Number(belowThresholdSince),
         averageReady: average[1],
         lastSwapAt: Number(average[2]),
