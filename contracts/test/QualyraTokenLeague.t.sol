@@ -780,18 +780,33 @@ contract QualyraTokenLeagueTest is CompetitionTestBase {
         _swap(keyA, bob, true, -1 ether, 1 ether);
         _swap(keyB, bob, true, -1 ether, 1 ether);
 
+        // In-battle fees are tagged to the battle but still sit in the hook until settlement sweeps them in, so at
+        // this point neither the pot nor contributionOf reflect them yet. The invariant (contributions sum to the
+        // pot) still holds here, and this pre-sweep snapshot lets us prove the sweep actually moved fees in.
         vm.warp(start + competition.BATTLE_DURATION() + competition.BATTLE_RESULT_GRACE());
-        uint256 contributionA = competition.contributionOf(battleId, address(tokenA));
-        uint256 contributionB = competition.contributionOf(battleId, address(tokenB));
-        assertGt(contributionA, 0);
-        assertGt(contributionB, 0);
-        assertEq(contributionA + contributionB, competition.getBattle(battleId).pot);
+        uint256 contributionBeforeSweep = competition.contributionOf(battleId, address(tokenA));
+        assertGt(contributionBeforeSweep, 0);
+        assertGt(competition.contributionOf(battleId, address(tokenB)), 0);
+        assertEq(
+            competition.contributionOf(battleId, address(tokenA))
+                + competition.contributionOf(battleId, address(tokenB)),
+            competition.getBattle(battleId).pot
+        );
 
         vm.prank(makeAddr("anyone"));
         competition.expireBattle(battleId);
 
         assertTrue(competition.getBattle(battleId).finalized);
         assertEq(uint256(competition.getBattle(battleId).outcome), uint256(QualyraCompetitionVault.Outcome.Void));
+
+        // expireBattle -> _settle sweeps the live-window fees from the hook into the pot first (bumping
+        // contributionOf), THEN refunds each token exactly its own post-sweep contribution to its own buyback&burn
+        // (spec §5.5). Measure the contribution AFTER settlement so the assertion matches the fees actually swept in
+        // (same pattern as test_voidBattle_refundsEachTokenItsOwnContribution).
+        uint256 contributionA = competition.contributionOf(battleId, address(tokenA));
+        uint256 contributionB = competition.contributionOf(battleId, address(tokenB));
+        assertGt(contributionA, contributionBeforeSweep, "live-window fees swept into A's contribution at settle");
+        assertEq(contributionA + contributionB, competition.getBattle(battleId).pot);
         assertEq(_funded(battleId, address(tokenA)), contributionA, "A refunded its own contribution");
         assertEq(_funded(battleId, address(tokenB)), contributionB, "B refunded its own contribution");
 
