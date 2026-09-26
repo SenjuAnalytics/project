@@ -76,7 +76,8 @@ export interface BattleView {
   startTime: number
   endTime: number
   pot: number
-  potUsd: number
+  /** Undefined when the battle's pair asset has no USD price — rendered as "—". */
+  potUsd: number | undefined
   outcome: number
   finalized: boolean
   status: BattleStatus
@@ -97,7 +98,8 @@ export interface LeaguePoolEntry {
   asset: Address
   symbol: string
   amount: number
-  usd: number
+  /** Undefined when the asset has no USD price — rendered as "—". */
+  usd: number | undefined
 }
 
 export interface WeekView {
@@ -127,7 +129,8 @@ export interface UserClaimablePrize {
     address: Address
     symbol: string
     amount: number
-    usd: number
+    /** Undefined when the asset has no USD price — rendered as "—". */
+    usd: number | undefined
   }[]
   totalUsd: number
 }
@@ -600,7 +603,7 @@ export function useCompetition(): CompetitionState {
       if (amtRaw > 0n) {
         const amount = Number(formatUnits(amtRaw, asset.decimals))
         const usd = quoteToUsd(amount, asset.symbol)
-        totalBootstrapUsd += usd
+        totalBootstrapUsd += usd ?? 0 // the total sums the PRICED part; an unpriced asset shows "—" at the row
         bootstrapPools.push({
           asset: asset.address,
           symbol: asset.symbol,
@@ -691,7 +694,7 @@ export function useCompetition(): CompetitionState {
         const amount = Number(formatUnits(potRaw, asset.decimals))
         if (amount <= 0) return
         const usd = quoteToUsd(amount, asset.symbol)
-        totalUsd += usd
+        totalUsd += usd ?? 0
         pools.push({ asset: asset.address, symbol: asset.symbol, amount, usd })
       })
 
@@ -768,7 +771,7 @@ export function useCompetition(): CompetitionState {
         }
         const usd = quoteToUsd(amount, slot.asset.symbol)
         prize.assets.push({ address: slot.asset.address, symbol: slot.asset.symbol, amount, usd })
-        prize.totalUsd += usd
+        prize.totalUsd += usd ?? 0
       })
       userClaimable.push(...byWeek.values())
     }

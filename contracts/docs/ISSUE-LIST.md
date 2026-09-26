@@ -64,8 +64,11 @@ harga registry-gated, fallback ETH di `normalizeQuote` dihapus, `unpricedQuoteAs
 CLI warning + alert operator, snapshot registry di-embed ke `priceBasis`. Konsekuensi disengaja:
 **datasetHash berubah** (model data tumbuh pra-mainnet; **`resultHash` tidak berubah** — terbukti di
 snapshot test). Test: indexer `npm test` **90/90** (75 lama + 15 baru) + `tsc` bersih di dua entry
-closure (CLI + operator service). Batch frontend **Q-9/Q-10** (tema yang sama, "tidak ada angka
-karangan") menyusul di branch yang sama.
+closure (CLI + operator service). Batch frontend **Q-9/Q-10** (tema yang sama, "tidak ada angka karangan") **selesai di branch yang
+sama**: Q-9 (fallback $1 → `undefined` → "—", tipe `number | undefined` end-to-end) dan Q-10 (jalur
+`balanceOf` v4 + angka hardcoded dihapus; likuiditas hanya dari Gecko `reserve_in_usd`).
+Verifikasi: `tsc --noEmit` bersih; `next build` di sandbox gagal **hanya** karena Google Fonts tidak
+terjangkau dari sandbox (bukan kode) — build penuh dikonfirmasi di mesin Anda.
 
 ---
 
@@ -351,21 +354,35 @@ dan panggil dari `FeeVault` (hapus perhitungan `launchedAt` lokal).
 
 ### Q-9 — Frontend: fallback $1 untuk simbol tak dikenal **[Rendah — opsional]**
 
-**Bukti.** `frontend/lib/pricing.ts:40` → `return STOCK_FALLBACK_PRICES[sym] ?? 1`.
+> **Status: SELESAI (batch fail-closed frontend).** `getQuoteAssetPriceUsd` kini mengembalikan
+> `undefined` untuk simbol tak dikenal (fallback `?? 1` dihapus); `quoteToUsd` / `usdToQuote`
+> meneruskannya; `formatDualPrice` mencetak `"—"`. Tipe `mcap`/`vol24`/`potUsd`/`usd` ikut
+> `number | undefined` dari `Project` sampai komponen (`SubCentUsd`, `Usd`, `UnsweptNote`,
+> `TournamentHeroBanner`) yang merender **"—"**; total pool menjumlahkan **bagian yang berharga**
+> (`?? 0`, terdokumentasi). `tsc --noEmit` bersih.
+
+**Bukti (asli).** `frontend/lib/pricing.ts:40` → `return STOCK_FALLBACK_PRICES[sym] ?? 1`.
 
 **Dampak.** Untuk simbol yang tidak ada di peta harga, UI menampilkan **$1/unit** — angka palsu yang
 terlihat seperti data nyata. Semua MC, volume, dan hadiah yang ditampilkan ikut salah. Hari ini
 tertutup karena 5 aset tetap sudah ada di peta; celahnya terbuka begitu ada aset baru.
 
-**Saran perbaikan.** Balikkan menjadi *fail-closed*: `?? 0`, dan `quoteToUsd` mengembalikan
-`undefined` saat rate tidak diketahui → UI menampilkan "—" (atau menyembunyikan angka USD), bukan
-angka karangan.
+**Saran perbaikan.** ~~Balikkan menjadi *fail-closed*~~ — **sudah dikerjakan** persis seperti ini
+(lihat status di atas).
 
 ---
 
 ### Q-10 — Frontend: reserve pool diukur dengan cara yang tidak berlaku untuk v4 **[Rendah]**
 
-**Bukti.** `fetchOnchainPoolReserves` (`frontend/app/api/prices/route.ts:195`) memakai
+> **Status: SELESAI (minimal, sesuai saran).** Jalur `fetchOnchainPoolReserves` (`balanceOf` ke
+> alamat pool — tidak valid di v4) **dihapus**, angka hardcoded `pooledBase`/`pooledQuote`
+> (4118060/1121.21 untuk PONS, 8345598/890.39 untuk AI) **dihapus**; tanpa sumber v4 yang valid
+> tidak ada angka reserve sama sekali (UI menampilkan "—", sudah didukung komponennya). Likuiditas
+> kini hanya dari `reserve_in_usd` GeckoTerminal (data nyata yang memang sudah di-fetch); fallback
+> "10%×mcap" dihapus dari jalur live — `liquidity` jadi opsional. Perbaikan penuh versi v4
+> (`StateLibrary.getSlot0` + `getLiquidity`) tetap kandidat lanjutan.
+
+**Bukti (asli).** `fetchOnchainPoolReserves` (`frontend/app/api/prices/route.ts:195`) memakai
 `balanceOf(pool)` lewat `eth_call`. Di Uniswap v4 semua token setiap pool disimpan di
 **PoolManager singleton**, jadi saldo di alamat pool = 0 → fungsi mengembalikan `null` → kode jatuh
 ke angka **hardcoded** (`pooledBase = 4118060` untuk PONS, `8345598` untuk AI, `pooledQuote =
@@ -374,10 +391,9 @@ ke angka **hardcoded** (`pooledBase = 4118060` untuk PONS, `8345598` untuk AI, `
 **Dampak.** Data kedalaman pool di UI tidak dapat dipercaya (angka tetap dari kode, ditampilkan
 seolah reserve nyata).
 
-**Saran perbaikan.** Untuk v4, ukuran yang benar adalah likuiditas posisi:
-`StateLibrary.getSlot0(poolId)` + `getLiquidity(poolId)` → nilai ≈ `2 × L × √P` (atau pakai
-`reserve_in_usd` GeckoTerminal). Minimal: hapus jalur `balanceOf` + angka hardcoded supaya UI tidak
-menampilkan reserve palsu.
+**Saran perbaikan.** ~~Minimal: hapus jalur `balanceOf` + angka hardcoded~~ — **sudah dikerjakan**
+(lihat status). Sisanya tetap terbuka sebagai kandidat: likuiditas posisi v4
+(`StateLibrary.getSlot0(poolId)` + `getLiquidity(poolId)` → nilai ≈ `2 × L × √P`).
 
 ---
 

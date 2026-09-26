@@ -9,7 +9,8 @@ export interface LivePriceItem {
   chg24: number
   vol24: number
   mcap: number
-  liquidity: number
+  /** Undefined when no pool reports a real reserve figure — never a fabricated number (Q-10). */
+  liquidity?: number
   pooledBase?: number
   pooledQuote?: number
   pooledQuoteSymbol?: string
@@ -192,34 +193,6 @@ async function fetchGeckoPool(poolAddress: string): Promise<{
   }
 }
 
-async function fetchOnchainPoolReserves(pool: string, token0: string, token1: string): Promise<{ bal0: number; bal1: number } | null> {
-  try {
-    const rpc = 'https://rpc.mainnet.chain.robinhood.com'
-    const poolPadded = '000000000000000000000000' + pool.toLowerCase().replace('0x', '')
-    const [b0Res, b1Res] = await Promise.all([
-      fetch(rpc, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: token0, data: '0x70a08231' + poolPadded }, 'latest'] }),
-        signal: AbortSignal.timeout(3500),
-      }).then(r => r.json()),
-      fetch(rpc, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_call', params: [{ to: token1, data: '0x70a08231' + poolPadded }, 'latest'] }),
-        signal: AbortSignal.timeout(3500),
-      }).then(r => r.json()),
-    ])
-
-    const bal0 = Number(BigInt(b0Res?.result || '0x0')) / 1e18
-    const bal1 = Number(BigInt(b1Res?.result || '0x0')) / 1e18
-    if (isNaN(bal0) || isNaN(bal1) || (bal0 === 0 && bal1 === 0)) return null
-    return { bal0, bal1 }
-  } catch {
-    return null
-  }
-}
-
 export async function GET() {
   const now = Date.now()
 
@@ -237,7 +210,7 @@ export async function GET() {
   try {
     const symbolsToFetch = POOLS.filter(a => !!a.symbolYahoo)
 
-    const [stockResults, liveEth, ponsPool, aiPool, spcxPool, ponsReserves, aiReserves] = await Promise.all([
+    const [stockResults, liveEth, ponsPool, aiPool, spcxPool] = await Promise.all([
       Promise.allSettled(
         symbolsToFetch.map(async a => ({
           id: a.id,
@@ -248,8 +221,6 @@ export async function GET() {
       fetchGeckoPool('0x10CC6BD38112cAc182db90B6a71d8Bb5939526bA'),
       fetchGeckoPool('0xc4a21f9d6485FC5893DD4A491B320a83DAF4Da1D'),
       fetchGeckoPool('0xc61284332117c3fb23a2a56cceffd07f7af60029'),
-      fetchOnchainPoolReserves('0x10CC6BD38112cAc182db90B6a71d8Bb5939526bA', '0x0bd7d308f8e1639fab988df18a8011f41eacad73', '0x39dBED3a2bd333467115dE45665cC57F813C4571'),
-      fetchOnchainPoolReserves('0xc4a21f9d6485FC5893DD4A491B320a83DAF4Da1D', '0x0bd7d308f8e1639fab988df18a8011f41eacad73', '0x2e8c31162b855a2ffa90f6f8634643ad6f111e18'),
     ])
 
     const quoteMap: Record<string, { price: number; chg24: number; vol: number }> = {}
@@ -307,10 +278,18 @@ export async function GET() {
         let calculatedChg = 0
         let calculatedVol = mapping.baseVol
         let calculatedMcap = mapping.baseMcap
-        let calculatedLiq = mapping.baseMcap ? Math.round(mapping.baseMcap * 0.1) : 15000000
+        // Q-10: no liquidity figure unless a pool actually reports one — never a
+        // fabricated "10% of mcap" next to real reserves. Gecko's reserve_in_usd
+        // (a real, currently-fetched number) fills this when the pool is quoted.
+        let calculatedLiq: number | undefined
 
-        let pooledBase = mapping.id === 'pons' ? 4118060 : mapping.id === 'ai' ? 8345598 : undefined
-        let pooledQuote = mapping.id === 'pons' ? 1121.21 : mapping.id === 'ai' ? 890.39 : undefined
+        // Q-10: per-side pool reserves used to be HARDCODED here (and, later,
+        // "measured" by calling balanceOf on the v4 pool address — invalid on
+        // v4, whose liquidity lives in the PoolManager singleton, so the call
+        // always returned 0/null and the hardcoded numbers were what showed).
+        // Without a valid v4 source we report no reserve figures at all ("—").
+        let pooledBase: number | undefined
+        let pooledQuote: number | undefined
         const pooledQuoteSymbol = (mapping.id === 'pons' || mapping.id === 'ai') ? 'WETH' : undefined
 
         if (mapping.id === 'spcx') {
@@ -334,11 +313,6 @@ export async function GET() {
             calculatedPrice = mapping.basePrice
             calculatedChg = -4.63
           }
-          if (ponsReserves) {
-            pooledBase = Math.round(ponsReserves.bal1)
-            pooledQuote = +ponsReserves.bal0.toFixed(2)
-            calculatedLiq = Math.round((ponsReserves.bal0 * ethPrice) + (ponsReserves.bal1 * calculatedPrice))
-          }
         } else if (mapping.id === 'ai') {
           if (aiPool) {
             quoted = true
@@ -350,11 +324,6 @@ export async function GET() {
           } else {
             calculatedPrice = mapping.basePrice
             calculatedChg = -12.24
-          }
-          if (aiReserves) {
-            pooledBase = Math.round(aiReserves.bal1)
-            pooledQuote = +aiReserves.bal0.toFixed(2)
-            calculatedLiq = Math.round((aiReserves.bal0 * ethPrice) + (aiReserves.bal1 * calculatedPrice))
           }
         }
 

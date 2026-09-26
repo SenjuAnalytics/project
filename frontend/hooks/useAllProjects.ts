@@ -12,8 +12,8 @@ const DEMO_EXAMPLES: Project[] = INITIAL_PROJECTS.filter(p => DEMO_EXAMPLE_IDS.i
 export interface AuthoritativePriceField {
   id: string
   price: number
-  mcap: number
-  vol24: number
+  mcap: number | undefined
+  vol24: number | undefined
   chg: number
 }
 

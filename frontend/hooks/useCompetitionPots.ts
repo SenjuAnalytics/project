@@ -39,7 +39,8 @@ export interface PotAmount {
   asset: Address
   symbol: string
   amount: number
-  usd: number
+  /** Undefined when the asset has no USD price — rendered as "—". */
+  usd: number | undefined
   /** Part of `amount` the pool hook still holds. The next sweep moves it into the vault. */
   unswept: number
 }
@@ -68,7 +69,8 @@ export interface ActiveBattlePot {
   asset: Address
   assetSymbol: string
   amount: number
-  usd: number
+  /** Undefined when the pair asset has no USD price — rendered as "—". */
+  usd: number | undefined
   /** Part of `amount` the pool hook still holds. Finalize sweeps it into the pot at the latest. */
   unswept: number
   startTime: number
@@ -359,8 +361,8 @@ export function useCompetitionPots(): CompetitionPotsState {
         const amount = Number(formatUnits(inVault + inHook, asset.decimals))
         const unswept = Number(formatUnits(inHook, asset.decimals))
         const usd = quoteToUsd(amount, asset.symbol)
-        tokenUsd += usd
-        pendingUnsweptUsd += quoteToUsd(unswept, asset.symbol)
+        tokenUsd += usd ?? 0
+        pendingUnsweptUsd += quoteToUsd(unswept, asset.symbol) ?? 0
         amounts.push({ asset: asset.address, symbol: asset.symbol, amount, usd, unswept })
       })
       if (amounts.length === 0) return
@@ -399,8 +401,8 @@ export function useCompetitionPots(): CompetitionPotsState {
       const assetSymbol = assetSymbolFor(b.asset)
       const usd = quoteToUsd(amount, assetSymbol)
       const proposedAt = Number(b.proposedAt)
-      activeTotalUsd += usd
-      activeUnsweptUsd += quoteToUsd(unswept, assetSymbol)
+      activeTotalUsd += usd ?? 0
+      activeUnsweptUsd += quoteToUsd(unswept, assetSymbol) ?? 0
       activeBattlePots.push({
         battleId: id,
         tokenA: b.tokenA,
@@ -437,8 +439,8 @@ export function useCompetitionPots(): CompetitionPotsState {
         const amount = Number(formatUnits(inVault + inHook, asset.decimals))
         const unswept = Number(formatUnits(inHook, asset.decimals))
         const usd = quoteToUsd(amount, asset.symbol)
-        totalUsd += usd
-        leagueUnsweptUsd += quoteToUsd(unswept, asset.symbol)
+        totalUsd += usd ?? 0
+        leagueUnsweptUsd += quoteToUsd(unswept, asset.symbol) ?? 0
         pools.push({ asset: asset.address, symbol: asset.symbol, amount, usd, unswept })
       })
       return { week, pools, totalUsd }

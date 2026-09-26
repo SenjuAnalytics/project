@@ -23,11 +23,14 @@ export const STOCK_FALLBACK_PRICES: Record<string, number> = {
 
 /**
  * Returns the current USD price of a given quote asset (ETH, USDG, NVDA, AAPL, SPY).
+ * Returns `undefined` for an asset with no known price — callers must render "—"
+ * rather than a number. (Q-9: an unknown asset used to fall back to $1, which
+ * printed an invented USD figure next to real ones.)
  */
 export function getQuoteAssetPriceUsd(
   quoteSymbol: string | undefined,
   livePrices?: Record<string, { price: number }> | null,
-): number {
+): number | undefined {
   const sym = (quoteSymbol ?? 'ETH').toUpperCase()
   if (sym === 'ETH') return ETH_USD_RATE
   if (sym === 'USDG' || sym === 'USD' || sym === 'USDC') return USDG_USD_RATE
@@ -37,7 +40,7 @@ export function getQuoteAssetPriceUsd(
     return livePrices[key].price
   }
 
-  return STOCK_FALLBACK_PRICES[sym] ?? 1
+  return STOCK_FALLBACK_PRICES[sym] // undefined when the asset is unknown — never an invented $1
 }
 
 /**
@@ -47,10 +50,10 @@ export function quoteToUsd(
   amount: number,
   quoteSymbol: string | undefined,
   livePrices?: Record<string, { price: number }> | null,
-): number {
+): number | undefined {
   if (!Number.isFinite(amount) || amount <= 0) return 0
   const rate = getQuoteAssetPriceUsd(quoteSymbol, livePrices)
-  return amount * rate
+  return rate === undefined ? undefined : amount * rate
 }
 
 /**
@@ -60,14 +63,15 @@ export function usdToQuote(
   usdAmount: number,
   quoteSymbol: string | undefined,
   livePrices?: Record<string, { price: number }> | null,
-): number {
+): number | undefined {
   if (!Number.isFinite(usdAmount) || usdAmount <= 0) return 0
   const rate = getQuoteAssetPriceUsd(quoteSymbol, livePrices)
-  return rate > 0 ? usdAmount / rate : 0
+  return rate === undefined || rate <= 0 ? undefined : usdAmount / rate
 }
 
 export interface DualPrice {
-  usdPrice: number
+  /** Undefined when the quote asset has no known USD price — render `usdFormatted`. */
+  usdPrice: number | undefined
   usdFormatted: string
   quotePrice: number
   quoteFormatted: string
@@ -87,11 +91,15 @@ export function formatDualPrice(
   const sym = (quoteSymbol ?? 'ETH').toUpperCase()
   const isUsdNative = sym === 'USDG' || sym === 'USD' || sym === 'USDC'
   const rate = getQuoteAssetPriceUsd(sym, livePrices)
-  const usdPrice = isUsdNative ? priceInQuote : priceInQuote * rate
+  const usdPrice = isUsdNative
+    ? priceInQuote
+    : rate === undefined
+      ? undefined
+      : priceInQuote * rate
 
   return {
     usdPrice,
-    usdFormatted: `$${formatPrice(usdPrice, isRwa)}`,
+    usdFormatted: usdPrice === undefined ? '—' : `$${formatPrice(usdPrice, isRwa)}`,
     quotePrice: priceInQuote,
     quoteFormatted: `${formatPrice(priceInQuote, isRwa)} ${sym}`,
     quoteSymbol: sym,
