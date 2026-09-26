@@ -51,6 +51,27 @@ function networkError(what: string, e: unknown): never {
   );
 }
 
+/**
+ * Fail-closed visibility (ISSUE-LIST Q-11 items 2-3): quote assets that had
+ * trades but no resolvable USD price contributed 0 QV. The dataset records
+ * them (unpricedQuoteAssets); this warning makes sure the operator NOTICES a
+ * listed-but-unpriced asset instead of discovering a silently low QV after
+ * the commitment is already on-chain.
+ */
+function warnUnpriced(
+  kind: string,
+  id: string,
+  dataset: { unpricedQuoteAssets?: string[] },
+) {
+  const u = dataset.unpricedQuoteAssets ?? [];
+  if (u.length === 0) return;
+  console.warn(
+    `[UNPRICED] ${kind} ${id}: ${u.length} quote asset(s) traded but had NO USD price basis ` +
+      `-> counted as 0 QV: ${u.join(", ")}. ` +
+      `If one of them should count, give it a price basis (an on-chain pool or INDEXER_PRICE_*) and re-run.`,
+  );
+}
+
 function printBattle(battleId: string, b: BattleBuild) {
   console.log(`battleId:    ${battleId}`);
   console.log(`outcome:     ${b.result.outcome} (${b.scoreOutcomeName})`);
@@ -95,6 +116,7 @@ async function indexBattle(args: string[]) {
 
   writeOutputs(`battle-${battleId}`, build.dataset, build.result, build.datasetHash, build.resultHash);
   printBattle(battleId, build);
+  warnUnpriced("battle", battleId, build.dataset);
   console.log(`blocks:      ${window}`);
 }
 
@@ -131,6 +153,7 @@ async function indexWeek(args: string[]) {
   console.log(`winners:     ${w.result.winners.join(", ")}`);
   console.log(`datasetHash: ${w.datasetHash}`);
   console.log(`resultHash:  ${w.resultHash}`);
+  warnUnpriced("week", week.toString(), w.dataset);
 }
 
 async function verifyCommit(args: string[]) {

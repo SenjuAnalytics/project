@@ -24,6 +24,24 @@ const DEFAULT_PRICES: PriceProvider = new ConstantPriceProvider();
 const outcomeName = (outcome: number): string =>
   Object.entries(OUTCOME).find(([, value]) => value === outcome)?.[0] ?? String(outcome);
 
+/**
+ * Sorted distinct quote assets among `trades` that the provider CANNOT price
+ * (they contribute 0 QV). Fail-closed visibility (ISSUE-LIST Q-11 items 2-3):
+ * the unpriced set is part of the dataset — and therefore hash-pinned — so an
+ * operator never discovers a silently low QV after the fact.
+ */
+function unpricedAssets(
+  trades: NormalizedTrade[],
+  prices: PriceProvider,
+): string[] {
+  const set = new Set<string>();
+  for (const t of trades) {
+    const qa = t.quoteAsset.toLowerCase();
+    if (!prices.priceOf(qa)) set.add(qa);
+  }
+  return [...set].sort();
+}
+
 /** Serialize a normalized trade into a canonical-friendly plain object. */
 function tradeToPlain(t: NormalizedTrade) {
   return {
@@ -42,12 +60,20 @@ function tradeToPlain(t: NormalizedTrade) {
 export function buildDataset(
   orderedFilteredTrades: NormalizedTrade[],
   prices: PriceProvider = DEFAULT_PRICES,
+  unpricedQuoteAssets: string[] = [],
 ) {
   return {
     config: configSnapshot(),
     params: paramsSnapshot(),
-    // Pin the exact USD price basis used so the datasetHash is reproducible.
-    priceBasis: { source: prices.source, prices: prices.snapshot() },
+    // Pin the exact USD price basis AND the exact registry used, so the
+    // datasetHash reproduces only from this same state (Q-11 item 2).
+    priceBasis: {
+      source: prices.source,
+      registry: prices.registrySnapshot(),
+      prices: prices.snapshot(),
+    },
+    // Quote assets that had trades but no resolvable USD price (0 QV).
+    unpricedQuoteAssets: [...unpricedQuoteAssets].sort(),
     trades: orderedFilteredTrades.map(tradeToPlain),
   };
 }
@@ -96,7 +122,9 @@ export function buildBattle(
 
   const score = computeScore({ qvA, qvB, buyersA, buyersB });
 
-  const dataset = buildDataset(qv.filteredTrades, prices);
+  // Scope: the battle's own tokens, BEFORE the QV filter — a trade that
+  // prices at 0 must still be REPORTED as unpriced.
+  const dataset = buildDataset(qv.filteredTrades, prices, unpricedAssets(relevant, prices));
   const result = {
     battleId,
     outcome: disqualification === OUTCOME.None ? score.outcome : disqualification,
@@ -135,7 +163,7 @@ export function buildWeek(
   const qv = computeQualifiedVolume(trades, ex, prices, buybackBurner);
   const lb = buildLeaderboard(week, qv.walletTotalQv);
 
-  const dataset = buildDataset(qv.filteredTrades, prices);
+  const dataset = buildDataset(qv.filteredTrades, prices, unpricedAssets(trades, prices));
   const result = {
     week: week,
     winners: lb.winners,

@@ -18,12 +18,19 @@ import { ADDRESSES, PAIR_ASSETS, PRICE_MODE, ETH_USDG_POOL, ZERO_ADDRESS, DEPLOY
 import { ConstantPriceProvider } from "./ConstantPriceProvider.ts";
 import { OnchainPriceProvider } from "./OnchainPriceProvider.ts";
 import type { PriceProvider } from "./PriceProvider.ts";
+import type { QuoteAssetRegistry } from "../quoteAssetRegistry.ts";
 
 export async function selectPriceProvider(
   client: PublicClient,
   priceBlock: bigint,
+  /**
+   * The factory's quote-asset registry at the pinned block (jobs.ts fetches it
+   * from factory logs over the SAME pinned range): gates which assets price,
+   * and supplies their decimals.
+   */
+  registry: QuoteAssetRegistry,
 ): Promise<PriceProvider> {
-  if (PRICE_MODE !== "onchain") return new ConstantPriceProvider();
+  if (PRICE_MODE !== "onchain") return new ConstantPriceProvider(registry);
   return OnchainPriceProvider.load({
     client,
     poolManager: ADDRESSES.poolManager as `0x${string}`,
@@ -37,7 +44,8 @@ export async function selectPriceProvider(
     blockNumber: priceBlock,
     fromBlock: DEPLOY_BLOCK,
     pageSize: LOG_PAGE_SIZE,
-    ethDecimals: PAIR_ASSETS.ETH.decimals,
-    usdgDecimals: PAIR_ASSETS.USDG.decimals,
+    ethDecimals: PAIR_ASSETS.ETH.decimals, // fallback; the registry wins
+    usdgDecimals: PAIR_ASSETS.USDG.decimals, // fallback; the registry wins
+    registry,
   });
 }

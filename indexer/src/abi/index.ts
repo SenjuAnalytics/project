@@ -53,6 +53,19 @@ export const TokenLaunchedEvent = parseAbiItem(
 );
 
 /* ------------------------------------------------------------------ */
+/* Factory quote-asset registry events (quoteAssetRegistry.ts replays  */
+/* them — logs only — into the registry at the pinned block).          */
+/* ------------------------------------------------------------------ */
+
+export const QuoteAssetSetEvent = parseAbiItem(
+  "event QuoteAssetSet(address indexed asset, uint256 phantomQuote, uint256 graduationThreshold, uint8 decimals)",
+);
+
+export const QuoteAssetDisabledEvent = parseAbiItem(
+  "event QuoteAssetDisabled(address indexed asset)",
+);
+
+/* ------------------------------------------------------------------ */
 /* Uniswap v4 PoolManager events (for the on-chain ETH/USDG price).    */
 /* `PoolId` is bytes32; `Currency`/`IHooks` are address. `id` is the   */
 /* first indexed topic, so logs are filtered by { id: poolId }. Both   */

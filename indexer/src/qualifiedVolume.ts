@@ -19,26 +19,9 @@
  *   6. Wash/circular/coordinated volume: v1 handled via the explicit denylist;
  *      Sybil/cluster detection is future work (documented in README).
  */
-import {
-  PAIR_ASSETS,
-  QV_PARAMS,
-  ADDRESSES,
-  type PairAssetSymbol,
-} from "./config.ts";
+import { QV_PARAMS, ADDRESSES } from "./config.ts";
 import type { NormalizedTrade, CreatorMap } from "./types.ts";
 import type { PriceProvider } from "./price/PriceProvider.ts";
-
-/** USD price scaled to micro-USD (1e6) as a BigInt, keyed by lowercased addr. */
-function priceUsdMicroByAddress(): Record<string, { micro: bigint; decimals: number }> {
-  const m: Record<string, { micro: bigint; decimals: number }> = {};
-  for (const sym of Object.keys(PAIR_ASSETS) as PairAssetSymbol[]) {
-    const a = PAIR_ASSETS[sym];
-    // Round USD price to micro-USD deterministically (round half up).
-    const micro = BigInt(Math.round(a.usd * 1_000_000));
-    m[a.address.toLowerCase()] = { micro, decimals: a.decimals };
-  }
-  return m;
-}
 
 /** Convert a trade's quote notional to micro-USD (BigInt, floor division). */
 export function tradeUsdMicro(

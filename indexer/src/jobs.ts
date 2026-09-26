@@ -15,6 +15,7 @@ import {
   resolveWeekToBlock,
 } from "./ingest.ts";
 import { buildBattle, buildWeek, type BattleBuild, type WeekBuild } from "./build.ts";
+import { fetchQuoteAssetRegistry } from "./quoteAssetRegistry.ts";
 import { DEPLOY_BLOCK, ZERO_ADDRESS, type ResolvedAddresses } from "./config.ts";
 import { selectPriceProvider } from "./price/selectPriceProvider.ts";
 import { readForcedOutcome } from "./disqualification.ts";
@@ -62,9 +63,14 @@ export async function computeBattleInWindow(
   // Discovery always starts at the deploy block so a token launched before the window keeps its curve.
   const curveMap = await fetchCurveMap(client, DEPLOY_BLOCK, window.toBlock);
   const creators = await fetchCreators(client, DEPLOY_BLOCK, window.toBlock);
+  // The factory's quote-asset registry as of the SAME pinned block (logs-only
+  // replay — quoteAssetRegistry.ts): the source of truth for pair-asset
+  // existence + decimals. Fetched BEFORE the scan so this run, the operator
+  // and any verifier all use the identical registry.
+  const registry = await fetchQuoteAssetRegistry(client, DEPLOY_BLOCK, window.toBlock);
   // Resolve the price basis before the scan so a misconfigured pool fails fast.
-  const prices = await selectPriceProvider(client, resolvePriceBlock(window.toBlock));
-  const trades = await ingestTrades(client, window.fromBlock, window.toBlock, curveMap);
+  const prices = await selectPriceProvider(client, resolvePriceBlock(window.toBlock), registry);
+  const trades = await ingestTrades(client, window.fromBlock, window.toBlock, curveMap, registry);
   const disqualification = await readForcedOutcome(client, resolved.competitionVault, ref.battleId);
   return buildBattle(
     ref.battleId,
@@ -127,8 +133,10 @@ export async function computeWeek(
 
   const curveMap = await fetchCurveMap(client, DEPLOY_BLOCK, window.toBlock);
   const creators = await fetchCreators(client, DEPLOY_BLOCK, window.toBlock);
-  const prices = await selectPriceProvider(client, resolvePriceBlock(window.toBlock));
-  const trades = await ingestTrades(client, window.fromBlock, window.toBlock, curveMap);
+  // Registry at the SAME pinned block (logs-only) — see computeBattleInWindow.
+  const registry = await fetchQuoteAssetRegistry(client, DEPLOY_BLOCK, window.toBlock);
+  const prices = await selectPriceProvider(client, resolvePriceBlock(window.toBlock), registry);
+  const trades = await ingestTrades(client, window.fromBlock, window.toBlock, curveMap, registry);
   const build = buildWeek(week, trades, { creators, denylist }, resolved.buybackBurner, prices);
   return { week, window, predatesDeploy: false, build };
 }

@@ -47,6 +47,16 @@ const POOL_KEY = {
 
 const POOL_ID = computePoolId(POOL_KEY);
 
+/**
+ * The factory's quote-asset registry at the pin (the live path always passes
+ * one — jobs.ts): ETH + USDG are listed-and-enabled, with their on-chain
+ * verified decimals. Assets outside it would be unpriceable (registry gate).
+ */
+const REGISTRY = {
+  [ETH]: { decimals: 18, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 100n },
+  [USDG]: { decimals: 6, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 100n },
+};
+
 // Proven live value: this sqrtPriceX96 => ethMicro 2659999999 ($2659.999999),
 // with ethDecimals=18, usdgDecimals=6, usdgUsdMicro=1_000_000.
 const SQRT_2660 = 4086207363329542387775121n;
@@ -91,6 +101,7 @@ function baseCfg(client, blockNumber, pageSize) {
     blockNumber,
     fromBlock: FROM_BLOCK,
     pageSize,
+    registry: REGISTRY,
   };
 }
 

@@ -40,12 +40,12 @@ import {
   TokenLaunchedEvent,
 } from "./abi/index.ts";
 import type { NormalizedTrade, CreatorMap } from "./types.ts";
-import { pairAssetByAddress } from "./config.ts";
 import { weekEnd } from "./leaderboard.ts";
 import { getBlockResilient, getLogsResilient } from "./rpc.ts";
-
-/** ETH native sentinel used by PAIR_ASSETS (address(0)). */
-const ETH_ADDRESS = "0x0000000000000000000000000000000000000000";
+import {
+  registryKnown,
+  type QuoteAssetRegistry,
+} from "./quoteAssetRegistry.ts";
 
 /**
  * curve (lowercased) -> its launched token + quote asset, from TokenLaunched.
@@ -75,25 +75,6 @@ export function tokenQuoteMap(curveMap: CurveMap): TokenQuoteMap {
     out[info.token.toLowerCase()] = info.quoteAsset.toLowerCase();
   }
   return out;
-}
-
-/**
- * Normalize a CURVE trade's quote asset.
- *
- * Native ETH is the only special case: an ETH-paired launch records
- * `quoteAsset == address(0)`, which is exactly how `PAIR_ASSETS` keys ETH
- * (`PAIR_ASSETS.ETH.address`), so it needs no translation and prices as ETH.
- *
- * Everything else that is NOT a known priced asset also lands on address(0) —
- * i.e. it is priced as ETH, which is a GUESS. That fallback is deliberate for
- * now (shipping behaviour) and is what the fail-closed price-basis work removes
- * (ISSUE-LIST Q-11 item 3): the pool path already refuses an unknown pair asset
- * instead (see `tokenQuoteMap` in `normalizeLogs`).
- */
-function normalizeQuote(qa: string): string {
-  const lc = (qa ?? "").toLowerCase();
-  if (pairAssetByAddress(lc)) return lc; // already a known priced asset
-  return ETH_ADDRESS; // ETH-native sentinel (or unknown) -> price as ETH
 }
 
 export function makeClient(): PublicClient {
@@ -162,9 +143,18 @@ export function normalizeLogs(raw: {
    * for the same reason: without it there is no pair asset to price against.
    */
   curveMap?: CurveMap;
+  /**
+   * The factory's quote-asset registry at the pinned block (the live path —
+   * jobs.ts — always passes one). When supplied, a trade whose quote asset is
+   * not listed+enabled there is SKIPPED in both markets: fail-closed, never
+   * re-priced as ETH (ISSUE-LIST Q-11 items 2-3). Omit only in offline unit
+   * tests (ungated).
+   */
+  registry?: QuoteAssetRegistry;
 }): NormalizedTrade[] {
   const trades: NormalizedTrade[] = [];
   const curveMap: CurveMap = raw.curveMap ?? {};
+  const registry = raw.registry;
   // Pool trades are emitted by the SwapRouter, so the curve address on the log
   // says nothing about the token's pair asset: resolve it from the launch.
   const quoteByToken = tokenQuoteMap(curveMap);
@@ -176,12 +166,12 @@ export function normalizeLogs(raw: {
     // `Swapped` has no quoteAsset field (and never had one), so the pair asset
     // comes from the token's launch record. A token we never saw launched is not
     // a Qualyra pool we can price -> skip it, exactly like an unknown curve.
-    // Kept as the launch recorded it (no `normalizeQuote` here): an unknown pair
-    // asset is left unmapped so the price provider refuses it instead of pricing
-    // it as ETH. The curve path still falls back to ETH and will be brought in
-    // line by the fail-closed price-basis work (ISSUE-LIST Q-11 item 3).
+    // Kept as the launch recorded it (no re-pricing here).
     const quoteAsset = quoteByToken[token];
     if (!quoteAsset) continue;
+    // Registry gate: a pair asset that is not listed+enabled at the pinned
+    // block is skipped — the pool and curve markets behave identically.
+    if (registry && !registryKnown(registry, quoteAsset)) continue;
     trades.push({
       token,
       trader: String(a.payer).toLowerCase(),
@@ -200,10 +190,15 @@ export function normalizeLogs(raw: {
     const curve = String(l.address ?? "").toLowerCase();
     const info = curveMap[curve];
     if (!info) continue; // not a known Qualyra curve -> skip
+    const quoteAsset = info.quoteAsset.toLowerCase();
+    // Fail-closed (ISSUE-LIST Q-11 item 3): an unknown / disabled pair asset
+    // is SKIPPED. Previously it was silently re-priced as ETH — crediting
+    // ETH-denominated volume the trade never had.
+    if (registry && !registryKnown(registry, quoteAsset)) continue;
     trades.push({
       token: info.token.toLowerCase(),
       trader: String(a.payer).toLowerCase(),
-      quoteAsset: normalizeQuote(info.quoteAsset),
+      quoteAsset,
       notionalQuote: BigInt(a.amountIn),
       side: "buy",
       blockNumber: BigInt(l.blockNumber),
@@ -218,10 +213,13 @@ export function normalizeLogs(raw: {
     const curve = String(l.address ?? "").toLowerCase();
     const info = curveMap[curve];
     if (!info) continue; // not a known Qualyra curve -> skip
+    const quoteAsset = info.quoteAsset.toLowerCase();
+    // Same fail-closed gate as the buys (ISSUE-LIST Q-11 item 3).
+    if (registry && !registryKnown(registry, quoteAsset)) continue;
     trades.push({
       token: info.token.toLowerCase(),
       trader: String(a.seller).toLowerCase(),
-      quoteAsset: normalizeQuote(info.quoteAsset),
+      quoteAsset,
       notionalQuote: BigInt(a.amountOut),
       side: "sell",
       blockNumber: BigInt(l.blockNumber),
@@ -316,6 +314,8 @@ export async function ingestTrades(
   toBlock: bigint,
   /** Optional pre-fetched curve map; fetched here when omitted. */
   curveMap?: CurveMap,
+  /** Optional quote-asset registry gate (the live path always passes one). */
+  registry?: QuoteAssetRegistry,
 ): Promise<NormalizedTrade[]> {
   const cmap = curveMap ?? (await fetchCurveMap(client, fromBlock, toBlock));
 
@@ -342,7 +342,7 @@ export async function ingestTrades(
     }).catch(() => [] as any[]),
   ]);
 
-  return normalizeLogs({ swapped, bought, sold, curveMap: cmap });
+  return normalizeLogs({ swapped, bought, sold, curveMap: cmap, registry });
 }
 
 /** Deterministic per-week upper block bound (+ whether the week has closed). */
