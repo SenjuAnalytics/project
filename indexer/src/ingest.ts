@@ -13,6 +13,11 @@
  *   - curve buy (Bought)                    => amountIn   (quote in)
  *   - curve sell(Sold)                      => amountOut  (quote out)
  *
+ * Pair asset: neither Bought/Sold nor Swapped carry one, so it is resolved from
+ * the token's TokenLaunched record — by emitting curve for the curve market, by
+ * token for the pool market. Without that both markets normalize to an empty
+ * quote asset and every trade is dropped before scoring.
+ *
  * Trader = Swapped.payer / Bought.payer / Sold.seller.
  */
 import {
@@ -51,11 +56,39 @@ export type CurveInfo = { token: string; quoteAsset: string };
 export type CurveMap = Record<string, CurveInfo>;
 
 /**
- * Option B — normalize a curve trade's quote asset.
- * ETH-native curves emit a TokenLaunched.quoteAsset that is a non-standard
- * sentinel (no contract code, not in PAIR_ASSETS). We map any quote asset that
- * is not a known priced asset to the ETH native address(0) so it prices as ETH,
- * matching the config convention (native ETH = address(0)).
+ * token (lowercased) -> its launch quote asset, derived from the same
+ * TokenLaunched records as `CurveMap` (each token is launched once).
+ *
+ * Pool trades need this because `Swapped` — emitted by the periphery
+ * SwapRouter once a token graduates — carries the token but NOT its pair
+ * asset. The launch record is the source of truth for both markets: graduation
+ * moves a token's liquidity into a v4 pool on the SAME pair it launched with,
+ * so the pair asset never changes. (An ETH-paired token launches with
+ * `quoteAsset == address(0)`, which is exactly how PAIR_ASSETS keys native ETH.)
+ */
+export type TokenQuoteMap = Record<string, string>;
+
+/** Invert a curve map into token -> quote asset (lowercased). */
+export function tokenQuoteMap(curveMap: CurveMap): TokenQuoteMap {
+  const out: TokenQuoteMap = {};
+  for (const info of Object.values(curveMap)) {
+    out[info.token.toLowerCase()] = info.quoteAsset.toLowerCase();
+  }
+  return out;
+}
+
+/**
+ * Normalize a CURVE trade's quote asset.
+ *
+ * Native ETH is the only special case: an ETH-paired launch records
+ * `quoteAsset == address(0)`, which is exactly how `PAIR_ASSETS` keys ETH
+ * (`PAIR_ASSETS.ETH.address`), so it needs no translation and prices as ETH.
+ *
+ * Everything else that is NOT a known priced asset also lands on address(0) —
+ * i.e. it is priced as ETH, which is a GUESS. That fallback is deliberate for
+ * now (shipping behaviour) and is what the fail-closed price-basis work removes
+ * (ISSUE-LIST Q-11 item 3): the pool path already refuses an unknown pair asset
+ * instead (see `tokenQuoteMap` in `normalizeLogs`).
  */
 function normalizeQuote(qa: string): string {
   const lc = (qa ?? "").toLowerCase();
@@ -124,20 +157,35 @@ export function normalizeLogs(raw: {
   /**
    * curve(lowercased) -> { token, quoteAsset } from TokenLaunched. Bought/Sold
    * logs are resolved by their emitting curve address (l.address); logs from a
-   * curve NOT in this map are ignored (not a Qualyra-launched token).
+   * curve NOT in this map are ignored (not a Qualyra-launched token). Swapped
+   * (pool) logs are resolved by their token, which must be a launch in this map
+   * for the same reason: without it there is no pair asset to price against.
    */
   curveMap?: CurveMap;
 }): NormalizedTrade[] {
   const trades: NormalizedTrade[] = [];
   const curveMap: CurveMap = raw.curveMap ?? {};
+  // Pool trades are emitted by the SwapRouter, so the curve address on the log
+  // says nothing about the token's pair asset: resolve it from the launch.
+  const quoteByToken = tokenQuoteMap(curveMap);
 
   for (const l of raw.swapped) {
     const a = l.args;
     const buying = Boolean(a.buyingToken);
+    const token = String(a.token).toLowerCase();
+    // `Swapped` has no quoteAsset field (and never had one), so the pair asset
+    // comes from the token's launch record. A token we never saw launched is not
+    // a Qualyra pool we can price -> skip it, exactly like an unknown curve.
+    // Kept as the launch recorded it (no `normalizeQuote` here): an unknown pair
+    // asset is left unmapped so the price provider refuses it instead of pricing
+    // it as ETH. The curve path still falls back to ETH and will be brought in
+    // line by the fail-closed price-basis work (ISSUE-LIST Q-11 item 3).
+    const quoteAsset = quoteByToken[token];
+    if (!quoteAsset) continue;
     trades.push({
-      token: String(a.token).toLowerCase(),
+      token,
       trader: String(a.payer).toLowerCase(),
-      quoteAsset: l.quoteAsset ? String(l.quoteAsset).toLowerCase() : "",
+      quoteAsset,
       notionalQuote: buying ? BigInt(a.amountIn) : BigInt(a.amountOut),
       side: buying ? "buy" : "sell",
       blockNumber: BigInt(l.blockNumber),

@@ -113,6 +113,12 @@ contract QualyraBondingCurve is ReentrancyGuard {
         uint256 creatorTax,
         uint256 quoteReserve
     );
+    /// @notice Part of a buy came back to the buyer because the curve only needed that much to complete.
+    /// @dev `Bought.amountIn` carries the amount actually used, so this event is the only on-chain record of the
+    ///      difference: a buy sized against a state someone else has already moved is filled up to the threshold and
+    ///      the rest is returned in the same transaction (Pons parity, no revert and no griefing window). The
+    ///      refund always goes to the caller, which is also who `buyer` is.
+    event BuyRefunded(address indexed buyer, uint256 amount);
     event CurveCompleted(uint256 quoteRaised);
     event GraduationDeferred();
     event Graduated(uint256 quoteAmount, uint256 tokenAmount);
@@ -154,7 +160,8 @@ contract QualyraBondingCurve is ReentrancyGuard {
 
     /// @notice Buys tokens with `amountIn` of the pair asset.
     /// @dev If the buy would push the curve past its threshold, only the part that completes the curve is
-    ///      used and the rest is sent back to the caller.
+    ///      used and the rest is sent back to the caller in the same transaction, reported by `BuyRefunded`.
+    ///      `minTokensOut` then bounds the PRICE rather than the quantity — see the check below.
     function buy(uint256 amountIn, uint256 minTokensOut, address recipient, uint256 deadline)
         external
         payable
@@ -174,7 +181,14 @@ contract QualyraBondingCurve is ReentrancyGuard {
         }
 
         BuyQuote memory q = _quoteBuy(amountIn, recipient);
-        if (q.tokensOut == 0 || q.tokensOut < minTokensOut) revert SlippageExceeded();
+        if (q.tokensOut == 0) revert SlippageExceeded();
+        // A buy that the curve could not fill completely is priced as a PARTIAL fill, so `minTokensOut` is read as a
+        // bound on price rather than on quantity (Pons parity): a caller who is filled for less than they offered
+        // cannot demand the whole quantity, only that the price they paid is no worse than the one their own
+        // arguments imply. When nothing was clamped this reduces exactly to `tokensOut >= minTokensOut`.
+        // Written with mulDiv so a caller passing an extreme bound (e.g. type(uint256).max) still gets
+        // SlippageExceeded instead of a 0x11 overflow panic from the plain multiplication.
+        if (minTokensOut > Math.mulDiv(amountIn, q.tokensOut, q.amountIn)) revert SlippageExceeded();
 
         quoteReserve += q.netIn;
         tokenReserve -= q.tokensOut;
@@ -182,6 +196,7 @@ contract QualyraBondingCurve is ReentrancyGuard {
         IERC20(token).safeTransfer(recipient, q.tokensOut);
         _sendFees(q.tradeFee + q.snipeTax, q.creatorTax);
         _pay(msg.sender, q.refund);
+        if (q.refund != 0) emit BuyRefunded(msg.sender, q.refund);
 
         emit Bought(msg.sender, recipient, q.amountIn, q.tokensOut, q.tradeFee, q.creatorTax, q.snipeTax, quoteReserve);
 

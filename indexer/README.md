@@ -286,6 +286,14 @@ QV is computed per wallet, normalized to USD, using **integer/BigInt math only**
 (micro-USD units, `1e6`). No JS float ever enters the QV total or the canonical
 form. All parameters live in `config.ts` (`QV_PARAMS`) and are env-overridable.
 
+**Trades in scope — both markets.** Curve trades (`Bought`/`Sold`, emitted per
+token by its `BondingCurve`) *and* pool trades after graduation (`Swapped`, emitted
+by the periphery `SwapRouter`). Neither event carries a pair asset, so it is
+resolved from the token's `TokenLaunched` record: by emitting curve for the curve
+market, by token for the pool market (a token's pair asset never changes at
+graduation). A token with no launch record is skipped — never priced by guess.
+Regression test: `test/ingestNormalize.test.mjs`.
+
 Rules applied, in order:
 
 1. **Minimum USD per trade** (`minTradeUsd`, default `$1.00`, env

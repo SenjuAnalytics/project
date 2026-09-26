@@ -2,6 +2,7 @@
 pragma solidity 0.8.26;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {Vm} from "forge-std/Vm.sol";
 
 import {LaunchTestBase} from "./utils/LaunchTestBase.sol";
 import {QualyraFactory} from "../src/QualyraFactory.sol";
@@ -275,6 +276,112 @@ contract QualyraLaunchTest is LaunchTestBase {
         assertEq(token.balanceOf(address(executor)), curve.reservedTokens());
         assertEq(token.balanceOf(alice), SUPPLY - curve.reservedTokens());
         assertTrue(factory.isGraduated(address(token)));
+    }
+
+    /// @dev The completing buy reports what came back to the buyer. `Bought.amountIn` only carries what was USED,
+    ///      so without this event the returned part leaves no trace on-chain at all.
+    function test_completingBuy_emitsBuyRefunded() public {
+        (, QualyraBondingCurve curve) = _launch(address(0), 0);
+        skip(10);
+
+        uint256 used = Math.mulDiv(ETH_THRESHOLD, 10_000, 9_900, Math.Rounding.Ceil);
+        uint256 refund = 10 ether - used;
+        assertGt(refund, 0);
+
+        vm.expectEmit(address(curve));
+        emit QualyraBondingCurve.BuyRefunded(alice, refund);
+        _buyEth(curve, alice, 10 ether);
+    }
+
+    /// @dev A buy that is not clamped returns nothing, so it must not report a refund (a zero-amount event would
+    ///      be noise for anything indexing it). recordLogs proves the event is ABSENT, not merely zero-valued.
+    function test_plainBuy_emitsNoBuyRefunded() public {
+        (, QualyraBondingCurve curve) = _launch(address(0), 0);
+        skip(10);
+
+        vm.recordLogs();
+        _buyEth(curve, alice, 1 ether);
+
+        bytes32 signature = keccak256("BuyRefunded(address,uint256)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != signature, "no refund -> no BuyRefunded");
+        }
+    }
+
+    /// @dev A partial fill must NOT revert (Pons parity). The caller is filled for what the curve still needed and
+    ///      the rest comes back in the same transaction, so a buy sized against a state someone else has already
+    ///      moved cannot be griefed into failing outright.
+    function test_partialFill_succeedsAndReturnsTheRest() public {
+        (QualyraLaunchToken token, QualyraBondingCurve curve) = _launch(address(0), 0);
+        skip(10);
+
+        // 4 ether nets 3.96 into the reserve, leaving 0.24 of the 4.2 threshold.
+        _buyEth(curve, alice, 4 ether);
+
+        // Bob offers 1 ether for a curve that only needs ~0.2424: the offer is clamped, not rejected.
+        QualyraBondingCurve.BuyQuote memory q = curve.quoteBuy(1 ether, bob);
+        assertLt(q.amountIn, 1 ether, "the offer is clamped to what completes the curve");
+        assertEq(q.refund, 1 ether - q.amountIn);
+        uint256 refund = q.refund;
+
+        uint256 bobBefore = bob.balance;
+        vm.prank(bob);
+        vm.expectEmit(address(curve));
+        emit QualyraBondingCurve.BuyRefunded(bob, refund);
+        uint256 tokensOut = curve.buy{value: 1 ether}(1 ether, q.tokensOut, bob, vm.getBlockTimestamp());
+
+        assertEq(tokensOut, q.tokensOut, "filled for exactly the quoted partial amount");
+        assertEq(bobBefore - bob.balance, q.amountIn, "only the used part leaves Bob's wallet");
+        assertEq(token.balanceOf(bob), q.tokensOut);
+        assertEq(executor.lastQuoteAmount(), ETH_THRESHOLD, "the curve filled exactly to the threshold");
+    }
+
+    /// @dev The bound still bites on a partial fill: the caller cannot demand a better price than the one their own
+    ///      arguments imply. Bob offers 1 ether but only ~0.2424 is spent, so his implied price allows a bound of
+    ///      about 4.1x the fill — 5x is refused.
+    function test_partialFill_stillRevertsWhenTheBoundBeatsThePrice() public {
+        (, QualyraBondingCurve curve) = _launch(address(0), 0);
+        skip(10);
+        _buyEth(curve, alice, 4 ether);
+
+        QualyraBondingCurve.BuyQuote memory q = curve.quoteBuy(1 ether, bob);
+        assertLt(q.amountIn, 1 ether);
+
+        vm.prank(bob);
+        vm.expectRevert(QualyraBondingCurve.SlippageExceeded.selector);
+        curve.buy{value: 1 ether}(1 ether, q.tokensOut * 5, bob, vm.getBlockTimestamp());
+    }
+
+    /// @dev On a buy the curve fills completely, the price bound is EXACTLY the old quantity bound: the quoted
+    ///      amount passes, one token more is refused. This is what keeps ordinary buys as strict as before.
+    function test_plainBuy_boundIsStillTheQuotedQuantity() public {
+        (, QualyraBondingCurve curve) = _launch(address(0), 0);
+        skip(10);
+
+        QualyraBondingCurve.BuyQuote memory q = curve.quoteBuy(1 ether, alice);
+        assertEq(q.refund, 0, "nothing to return when the curve has room");
+
+        vm.prank(bob);
+        vm.expectRevert(QualyraBondingCurve.SlippageExceeded.selector);
+        curve.buy{value: 1 ether}(1 ether, q.tokensOut + 1, bob, vm.getBlockTimestamp());
+
+        vm.prank(bob);
+        curve.buy{value: 1 ether}(1 ether, q.tokensOut, bob, vm.getBlockTimestamp());
+    }
+
+    /// @dev An extreme bound must fail as SlippageExceeded, never as a 0x11 arithmetic panic — on a PARTIAL fill,
+    ///      where the bound is crossed with a spend smaller than the offer. Pons' cross-multiplied form
+    ///      (`spent * minTokensOut`) overflows on exactly this input; the mulDiv form is what it buys us.
+    ///      (`test_trade_revertsOnSlippageAndDeadline` covers the same bound on an unclamped buy.)
+    function test_partialFill_extremeBound_revertsAsSlippageNotOverflow() public {
+        (, QualyraBondingCurve curve) = _launch(address(0), 0);
+        skip(10);
+        _buyEth(curve, alice, 4 ether);
+
+        vm.prank(bob);
+        vm.expectRevert(QualyraBondingCurve.SlippageExceeded.selector);
+        curve.buy{value: 1 ether}(1 ether, type(uint256).max, bob, vm.getBlockTimestamp());
     }
 
     function test_completingBuy_defersGraduationWhenExecutorFails() public {

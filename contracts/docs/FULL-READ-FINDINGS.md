@@ -261,6 +261,6 @@ Supaya jelas apa yang sudah diverifikasi, bukan hanya yang bermasalah:
 4. **Temuan 4, 5, 7**: perbaikan kecil, bisa digabung dalam satu PR.
 5. **Temuan 8 + tabel hadiah league di spec**: update dokumen (`FEE-AND-BATTLE-SPEC.md`) agar
    satu sumber kebenaran dengan kode.
-6. Baru setelah itu kembali ke rencana **custom pair** (`CUSTOM-PAIR-DESIGN.md §10`), karena
-   gate permissionless akan menambah aset baru ke mesin yang sekarang masih punya 3 jalur
-   "dana menunggu manusia" di atas.
+6. ~~Rencana custom pair~~ — **DITUNDA** (keputusan 2026-09-26): desainnya dihapus dari repo dan
+   fitur itu belum diperlukan. Dibuka kembali hanya setelah kontrak pasca-audit di-redeploy dan
+   memang mau dijalankan. (Alasan aslinya tetap tercatat di ISSUE-LIST.md §Q-5.)

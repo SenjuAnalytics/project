@@ -7,7 +7,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test test/determinism.test.mjs test/verify.test.mjs test/onchainPrice.test.mjs test/weekBlock.test.mjs test/rpc.test.mjs test/window.test.mjs test/disqualification.test.mjs test/operatorPlan.test.mjs test/operatorService.test.mjs",
+    "test": "node --experimental-strip-types --test test/determinism.test.mjs test/verify.test.mjs test/onchainPrice.test.mjs test/weekBlock.test.mjs test/rpc.test.mjs test/window.test.mjs test/ingestNormalize.test.mjs test/disqualification.test.mjs test/operatorPlan.test.mjs test/operatorService.test.mjs",
     "index-battle": "node --experimental-strip-types src/cli.ts index-battle",
     "index-week": "node --experimental-strip-types src/cli.ts index-week",
     "verify-commit": "node --experimental-strip-types src/cli.ts verify-commit",

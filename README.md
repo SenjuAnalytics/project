@@ -18,7 +18,9 @@
 | 4 | **Token League** | 24 hour battles between graduated tokens. The pot buys and burns the winning token, and every battle has a single winner. |
 | 5 | **Trader League** | One weekly leaderboard across every token on the platform, paid to the top five wallets. |
 
-> **Status:** the contracts are **live on Robinhood Chain testnet (chain 46630)** — see `deployments/46630.json` for addresses. No independent audit has been done yet, and nothing is live on **mainnet** (chain 4663). The finalized fee/battle model is defined in [`docs/FEE-AND-BATTLE-SPEC.md`](docs/FEE-AND-BATTLE-SPEC.md) (the single source of truth); the currently deployed testnet contracts still run the **older** fee logic until redeployed.
+> **Status:** the contracts are **live on Robinhood Chain testnet (chain 46630)** — see `deployments/46630.json` for addresses. No independent audit has been done yet, and nothing is live on **mainnet** (chain 4663). The finalized fee/battle model is defined in [`docs/FEE-AND-BATTLE-SPEC.md`](docs/FEE-AND-BATTLE-SPEC.md) (the single source of truth).
+>
+> ⚠️ **The deployed testnet instance is stale by design — awaiting a fresh deploy.** It predates audit batches 1+2 (`expireBattle`, `skipWeek`, `MAX_PRICE_AGE`, the 90-day pending tier, `isPendingExpired` routing) and still has every price feed at `address(0)`, so the eligibility engine is inert there. The contracts are non-upgradeable and are not declared ready yet, so there is nothing to fix: the old addresses simply stay in use until the next deploy. See [`deployments/README.md`](deployments/README.md).
 
 ---
 
