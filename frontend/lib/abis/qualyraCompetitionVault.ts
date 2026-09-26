@@ -40,6 +40,11 @@ export const qualyraCompetitionVaultAbi = [
   },
   {
     "type": "error",
+    "name": "BattleNotExpired",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "BattleNotOver",
     "inputs": []
   },
@@ -260,12 +265,30 @@ export const qualyraCompetitionVaultAbi = [
   },
   {
     "type": "error",
+    "name": "WeekSkipTooEarly",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "ZeroAddress",
     "inputs": []
   },
   {
     "type": "event",
     "name": "BattleCanceled",
+    "inputs": [
+      {
+        "name": "battleId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "BattleExpired",
     "inputs": [
       {
         "name": "battleId",
@@ -848,6 +871,25 @@ export const qualyraCompetitionVaultAbi = [
     "anonymous": false
   },
   {
+    "type": "event",
+    "name": "WeekSkipped",
+    "inputs": [
+      {
+        "name": "week",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "toWeek",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
     "type": "function",
     "name": "accounted",
     "inputs": [
@@ -914,6 +956,19 @@ export const qualyraCompetitionVaultAbi = [
   {
     "type": "function",
     "name": "BATTLE_DURATION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "BATTLE_RESULT_GRACE",
     "inputs": [],
     "outputs": [
       {
@@ -1224,6 +1279,19 @@ export const qualyraCompetitionVaultAbi = [
   },
   {
     "type": "function",
+    "name": "expireBattle",
+    "inputs": [
+      {
+        "name": "battleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "factory",
     "inputs": [],
     "outputs": [
@@ -1517,6 +1585,19 @@ export const qualyraCompetitionVaultAbi = [
   {
     "type": "function",
     "name": "LEAGUE_CHALLENGE_PERIOD",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "LEAGUE_SKIP_GRACE",
     "inputs": [],
     "outputs": [
       {
@@ -1918,6 +1999,19 @@ export const qualyraCompetitionVaultAbi = [
   },
   {
     "type": "function",
+    "name": "skipWeek",
+    "inputs": [
+      {
+        "name": "week",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "startLeague",
     "inputs": [],
     "outputs": [],
@@ -1955,6 +2049,19 @@ export const qualyraCompetitionVaultAbi = [
     "inputs": [],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "UNRESOLVED_PENDING_GRACE",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
