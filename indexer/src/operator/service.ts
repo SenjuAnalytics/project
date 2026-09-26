@@ -38,6 +38,7 @@ import {
   LEAGUE_CHALLENGE_PERIOD,
   battlesAwaitingResult,
   battlesInChallenge,
+  battlesToExpire,
   battlesToFinalize,
   bookableTokens,
   bookingOpen,
@@ -51,6 +52,7 @@ import {
   weeksAwaitingWinners,
   weeksInChallenge,
   weeksToFinalize,
+  weeksToSkip,
   type TokenState,
 } from "./plan.ts";
 import type { ServiceState } from "./state.ts";
@@ -171,9 +173,22 @@ async function keeperPass(
         args: [BigInt(t.battleId), t.token],
       });
     }
+    // Liveness fallbacks: a battle or week nobody ever reported blocks its pot, so after the grace period the keeper
+    // closes it like anyone else could — a Void battle refunds each token its own contribution, a skipped week's
+    // pool joins the week in progress.
+    for (const b of battlesToExpire(snap.battles, snap.now)) {
+      await send(ctx, "keeper", `expire battle #${b.id} with no result`, {
+        address: vault, abi: QualyraCompetitionVaultAbi, functionName: "expireBattle", args: [BigInt(b.id)],
+      });
+    }
     for (const w of weeksToFinalize(snap.weeks, snap.now)) {
       await send(ctx, "keeper", `finalize league week ${w.week}`, {
         address: vault, abi: QualyraCompetitionVaultAbi, functionName: "finalizeWeek", args: [BigInt(w.week)],
+      });
+    }
+    for (const w of weeksToSkip(snap.firstLeagueWeek, snap.weeks, snap.now)) {
+      await send(ctx, "keeper", `skip league week ${w.week} with no winners`, {
+        address: vault, abi: QualyraCompetitionVaultAbi, functionName: "skipWeek", args: [BigInt(w.week)],
       });
     }
   }

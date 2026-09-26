@@ -1,6 +1,8 @@
 # QUALYRA — Spesifikasi Fee, Eligibility & Battle (Desain Baru)
 
-> **Status:** Disepakati (belum diimplementasikan di kode).
+> **Status:** Disepakati **dan sudah diimplementasikan di kode.** Batch liveness (Q-1/Q-2: `expireBattle`,
+> `skipWeek`, pending expiry) dan koreksi dokumen (Q-4/Q-12/Q-13: routing Fase 3, tabel hadiah league, pool-only
+> + harga basi) sudah masuk. Bagian yang menyentuh kode diberi tanda di §5.1/§5.2.
 > **Tujuan dokumen:** Acuan tunggal untuk pengerjaan perubahan kontrak agar tidak ada salah tafsir.
 > Dokumen ini mendefinisikan aturan **market cap eligibility**, **diskualifikasi**, dan **alur pembagian fee** untuk sistem Token Battle.
 
@@ -19,6 +21,9 @@
 | Eligibility MC 100k on-chain | tidak ada | **cek tiap trade, window 24 jam** *(baru)* |
 | Jumlah battle per token | tidak dibatasi eksplisit | **maksimal 1× seumur hidup** *(baru)* |
 | Durasi battle diatur (mingguan/48j) | — | **TIDAK diterapkan** (dibatalkan) |
+| Battle/minggu tanpa hasil (operator mati) | dana bisa beku | **fallback permissionless:** `expireBattle` 72 jam (Void) / `skipWeek` 14 hari *(baru)* |
+| Pending tak terpakai | bisa menunggu manusia | **otomatis ke treasury** (30/120 hari, `releaseExpiredPending`) *(baru)* |
+| Harga pool basi | dipakai sebagai harga sah | **NOT-EVALUABLE** setelah 7 hari tanpa swap *(baru)* |
 
 ---
 
@@ -33,6 +38,11 @@
   - Jika MC **jatuh di bawah $100k** → token **gugur / didiskualifikasi** (permanen — tidak bisa eligible lagi selamanya, kecuali battle yang sedang berjalan tetap lanjut).
   - Jika **bertahan ≥$100k** melewati 24 jam → token **eligible** untuk battle.
 - **Setiap token maksimal battle 1× seumur hidup.** Setelah pernah battle, tidak bisa ikut battle lagi.
+- **Aturan $100k berlaku sebagai pemeliharaan terus-menerus, bukan hanya 24 jam pertama.** Sejak timer mulai,
+  setiap CLOSE di bawah $100k (kapan pun: sebelum eligible, saat menunggu booking, saat sudah dijadwalkan, atau
+  saat battle LIVE) mendiskualifikasi token secara permanen. Aturannya berakhir hanya ketika window 24 jam
+  battle-nya selesai — jadi token harus memegang $100k terus sampai battle itu final (CLOSE terakhir sebelum
+  window habis adalah yang menentukan).
 
 ### 2.2 Mekanisme pengecekan — ON-CHAIN (Arah B, via Chainlink)
 > **KEPUTUSAN FINAL:** Eligibility dihitung **murni on-chain, pada setiap trade** (trustless & auditable).
@@ -45,7 +55,16 @@
   - **ETH/USD** feed untuk pasangan ETH; **USDG** ≈ $1; **stock token (NVDA/AAPL/SPY)** pakai feed masing-masing.
   - Stock feed sudah **multiplier-adjusted** (`latestRoundData()` sudah termasuk `uiMultiplier`) → **jangan** dikali manual.
   - **Wajib staleness check** (`updatedAt` vs heartbeat) + tangani `oraclePaused()` (stock 24/5, saat market tutup / corporate action bisa pause).
-- Berlaku **sama di kedua fase**: sebelum graduation (bonding curve) maupun setelah graduation (pool Uniswap v4 via hook).
+- **Hanya berlaku di pool (setelah graduation), bukan di bonding curve.** Trade yang memicu pengecekan adalah
+  trade di pool Uniswap v4 (hook), dan `onTradeClose` hanya menerima laporan dari hook. Ini juga batas alami:
+  MC maksimum di bonding curve ≈ 20,58 ETH (≈ $54,7k pada ETH $2.660; USDG ≈ $8k; NVDA ≈ $9,3k), jadi timer
+  $100k memang tidak mungkin mulai sebelum token graduasi.
+- **Harga yang dipakai adalah rata-rata 30 menit (TWAP) pool, bukan harga sesaat.** Wajib `ready`: pool baru
+  melaporkan setelah punya satu window penuh (30–60 menit setelah graduasi), dan **sebuah pool yang tidak
+  trading selama 7 hari (`MAX_PRICE_AGE`) melaporkan NOT-READY** — "basi = tidak dievaluasi" untuk kedua arah
+  (tidak bisa memulai timer, tidak bisa men-DQ). Alasannya: harga terakhir yang umurnya tidak diketahui tidak
+  boleh memindahkan uang, sementara sisi USD (Chainlink) selalu segar sehingga pergerakan aset pair saja bisa
+  menaikkan/menurunkan MC. Token yang pool-nya basi diselesaikan lewat jalur pending (§5.1 poin 9), bukan lewat DQ.
 
 > **⚠️ TESTNET vs MAINNET:** Alamat feed Chainlink **berbeda** antar jaringan.
 > - Testnet (chain **46630**) — set alamat feed testnet.
@@ -105,23 +124,31 @@ Berlaku untuk MC berapa pun (di bawah 100k, saat mengejar 100k, maupun setelah e
 15% competition
 └─ 100% → POT BATTLE            (70% + 30% seluruhnya ke pot)
 ```
-**PLUS:** seluruh saldo `pendingBattlePot[token]` yang terkumpul di Fase 1 **di-seed masuk ke pot** saat battle dimulai.
+**PLUS:** seluruh saldo `pendingBattlePot[token]` yang terkumpul di Fase 1 **di-seed masuk ke pot saat battle
+dibooking** (operator memanggil `scheduleBattles`; di detik itu juga fee yang menunggu di bucket 0 ikut disapu
+masuk pot).
 
-> **Pot battle = pendingBattlePot (seed) + 100% competition fee selama window LIVE.**
+> **Pot battle = pendingBattlePot (seed) + 100% competition fee sejak booking sampai window LIVE berakhir.**
+> Hook menandai fee dengan battle-nya selama `[startTime, startTime + BATTLE_DURATION)`; fee yang masuk setelah
+> itu — yaitu sepanjang **masa sanggah 24 jam** dan jeda sebelum `finalizeBattle` — sudah Fase 3.
 
-### 3.3 FASE 3 — Setelah battle selesai (token pensiun dari battle)
+### 3.3 FASE 3 — Setelah window LIVE berakhir, bukan setelah finalize (token pensiun dari battle)
 ```
 15% competition
 ├─ 70% → TREASURY               (BUKAN lagi ke pendingBattlePot)
 └─ 30% → Trader League
 ```
+> **Penting:** "battle selesai" untuk routing fee = **24 jam window LIVE berakhir** (`startTime + BATTLE_DURATION`),
+> **bukan** saat `finalizeBattle`. Ini disengaja: masa sanggah dan proses finalize tidak perlu menahan aliran fee,
+> dan hasilnya tidak bergantung pada kapan operator menekan finalize. Pot yang sudah terkumpul tidak berubah lagi
+> setelah window berakhir.
 
 ### 3.4 Tabel ringkas
 | Status token | 70% competition | 30% competition |
 |---|---|---|
 | **Sejak launch** → belum pernah battle (MC berapa pun) | **→ pendingBattlePot** | → Trader League |
-| Battle LIVE | **100% (70%+30%) → POT** + seed pending | (ikut ke pot) |
-| Setelah battle selesai | **→ TREASURY** | → Trader League |
+| Dibooking s/d window LIVE berakhir | **100% (70%+30%) → POT** + seed pending | (ikut ke pot) |
+| Setelah window LIVE berakhir (masa sanggah, finalize, seterusnya) | **→ TREASURY** | → Trader League |
 
 > **Catatan:** Menyentuh MC 100k **tidak** mengubah baris pertama — pembagiannya sama sejak launch.
 > 100k hanya penanda eligibility + pemicu timer diskualifikasi (lihat §2).
@@ -180,6 +207,36 @@ Dana  →  BUKAN ke treasury
 4. **Draw** (skor akhir seri, **tidak ada pemenang**) → **BUKAN dibagi rata 50/50**. Tiap token menerima kembali **porsi yang IA SENDIRI sumbangkan** ke pot = `seed dari pendingBattlePot`-nya + `competition fee dari trade-nya selama battle` → dana itu dipakai **buyback & burn token itu sendiri**. Jadi kontribusi token A → buyback & burn **A**; kontribusi token B → buyback & burn **B** (**TIDAK** ke Trader League). *(Implementasi: butuh tracking `contributionOf[battleId][token]` di dalam pot.)*
 5. **Void** (battle batal / tanpa hasil sah) → **sama seperti draw**: tiap token menerima kembali **kontribusinya sendiri** (`seed pending`-nya + `fee live`-nya) → buyback & burn token itu (**TIDAK** ke Trader League; **bukan** 50/50 rata).
 6. **Keduanya gugur** dalam window → **yang gugur DULUAN kalah, token satunya (bertahan lebih lama) MENANG** → 100% pot → buyback & burn pemenang. **Selalu ada pemenang** (bukan void). Void murni hanya bila keduanya gugur di **blok/trade yang sama persis** (praktis mustahil).
+7. **Fallback liveness battle (Q-1):** bila window LIVE sudah berakhir **72 jam** (`BATTLE_RESULT_GRACE`) dan tidak ada hasil yang sah diposting (operator mati, atau hasilnya di-veto dan tidak pernah diganti), **siapa pun** boleh memanggil `expireBattle` → battle ditutup sebagai **Void** (hasil ditolak selamanya setelah itu). Void berarti tiap token menerima kembali kontribusinya sendiri (poin 5), jadi pot tidak pernah beku karena satu pihak tidak bertindak.
+8. **Fallback liveness league (Q-1):** bila sebuah minggu league sudah berakhir **14 hari** (`LEAGUE_SKIP_GRACE`) dan tidak ada pemenang yang diposting, **siapa pun** boleh memanggil `skipWeek` → seluruh pool minggu itu berpindah ke minggu yang sedang berjalan (`currentWeek()`). Tidak ada pemenang yang bisa diklaim dari minggu yang di-skip, jadi dana tidak bisa diambil dua kali. Minggu yang sudah punya proposal tidak boleh di-skip — jalur normalnya (masa sanggah → `finalizeWeek`) yang jalan.
+9. **Pending yang tak terpakai (Q-2):** `pendingBattlePot` sebuah token berakhir di **treasury** lewat `releaseExpiredPending` (siapa pun boleh; fee vault juga menjalankannya otomatis pada fee berikutnya) bila:
+   - **30 hari** (`PENDING_EXPIRY`) sejak launch dan timer belum pernah mulai (`firstCloseAt == 0`) — dan token tidak sedang dalam masa warm-up pool; atau
+   - **30 + 90 hari** (`UNRESOLVED_PENDING_GRACE`) sejak launch dan timer sudah mulai tapi tidak pernah selesai (tidak eligible, tidak gugur, tidak battle).
+   Jadi tidak ada kombinasi "pool sepi tanpa laporan" yang menahan dana tanpa ujung.
+
+---
+
+### 5.2 Trader League — hadiah mingguan (Q-12)
+
+- **Pool minggu** = 30% bagian league dari setiap trade + sisa pool minggu sebelumnya. Saat `startLeague`,
+  bootstrap pool yang terkumpul disebar ke 4 minggu pertama (30% bagian league sebelum league dimulai menumpuk di
+  bootstrap pool itu). Deposit yang masuk saat sebuah minggu sedang berjalan langsung menambah pool minggu itu.
+- **Hadiah peringkat (top 5) per asset**, dihitung dari pool minggu berjalan (`prizeShareBps`):
+
+| Peringkat | Porsi pool |
+|---|---|
+| 1 | **40%** |
+| 2 | **30%** |
+| 3 | **15%** |
+| 4 | **10%** |
+| 5 | **5%** |
+
+- **Peringkat kosong atau tidak diklaim:** porsi yang tidak punya pemenang ikut ke pool minggu berikutnya saat
+  `finalizeWeek`; pool minggu tanpa pemenang sama sekali berpindah seluruhnya.
+- **Klaim dibuka 60 hari** (`CLAIM_WINDOW`) setelah finalisasi. Setelah itu `rolloverUnclaimed` memindahkan hadiah
+  yang belum diklaim ke pool minggu yang sedang berjalan — dan tidak pernah ke minggu yang klaimnya sudah dibuka
+  (dana di sana tidak akan bisa diklaim lagi). Siapa pun boleh memicu klaim; hadiah tetap ke pemenang.
+- **Minggu tanpa laporan:** lihat §5.1 poin 8 (`skipWeek`), jalur liveness-nya.
 
 ---
 
@@ -193,8 +250,8 @@ Trading fee 1%
 ├─ 15% → platform (treasury)
 └─ 15% → competition
         ├─ sejak launch s/d belum battle   → 70% pendingBattlePot + 30% Trader League
-        ├─ SEDANG LIVE battle (Fase 2)     → 100% ke POT (+ seed pendingBattlePot)
-        ├─ setelah battle selesai (Fase 3) → 70% treasury + 30% Trader League
+        ├─ dibooking s/d LIVE berakhir     → 100% ke POT (+ seed pendingBattlePot)
+        ├─ setelah LIVE berakhir (Fase 3)  → 70% treasury + 30% Trader League
         ├─ gugur sebelum battle            → 100% (fee + pending) → treasury
         └─ gugur saat LIVE battle          → tetap ke POT (battle jalan penuh 24 jam) → pemenang
 
@@ -203,6 +260,12 @@ Finalize:
 - Menang normal / menang karena lawan gugur → 100% pot → buyback & burn token pemenang.
 - Draw / Void (tidak ada pemenang) → tiap token dapat KEMBALI kontribusinya sendiri (seed pending + fee live-nya) → buyback & burn token itu (BUKAN 50/50 rata; TIDAK ke Trader League).
 - Keduanya gugur → yang gugur DULUAN kalah, token satunya menang (selalu ada pemenang; bukan void).
+
+Liveness (Q-1 / Q-2) — tidak ada dana yang menunggu manusia:
+- Battle tanpa hasil sah 72 jam setelah LIVE berakhir → siapa pun boleh `expireBattle` → Void (kontribusi masing-masing token kembali).
+- Minggu league tanpa pemenang 14 hari setelah minggu berakhir → siapa pun boleh `skipWeek` → pool pindah ke minggu berjalan.
+- pendingBattlePot yang tak terpakai → treasury (30 hari tanpa timer; 120 hari bila timer tidak pernah selesai; atau saat pool sudah basi).
+- Eligibility pool basi (7 hari tanpa swap) = NOT-EVALUABLE untuk kedua arah (lihat §2.2).
 ```
 
 ---
@@ -234,8 +297,13 @@ Finalize:
 - [x] ~~Detail finalize saat lawan gugur~~ → **JALAN PENUH 24 jam** (bukan dini); fee token gugur tetap ke pot; keduanya gugur = void. Lihat §4.2 & §5.
 - [x] ~~Aturan draw & void~~ → **draw & void = tiap token dapat KEMBALI kontribusinya sendiri** (seed pending + fee live-nya) → buyback & burn token itu (BUKAN 50/50 rata; TIDAK ke Trader League). Butuh tracking `contributionOf[battleId][token]`. Lihat §5.
 - [x] ~~Kasus keduanya gugur~~ → **yang gugur DULUAN kalah, token satunya menang** (selalu ada pemenang, bukan void). Lihat §4.2 & §5.
+- [x] ~~Battle tanpa hasil saat operator mati~~ → **Void permissionless setelah 72 jam** (`expireBattle`); tiap token menerima kembali kontribusinya. Lihat §5.1 poin 7.
+- [x] ~~Minggu league tanpa pemenang~~ → **pool pindah ke minggu berjalan setelah 14 hari** (`skipWeek`), tanpa bisa diklaim dua kali. Lihat §5.1 poin 8.
+- [x] ~~Pending yang tidak pernah terpakai~~ → **treasury**: 30 hari tanpa timer, **120 hari** bila timer tidak pernah selesai (Q-2), atau saat pool sudah basi. Lihat §5.1 poin 9.
+- [x] ~~Harga pool basi dipakai untuk keputusan uang~~ → **NOT-EVALUABLE kedua arah** setelah 7 hari tanpa swap (`MAX_PRICE_AGE`), tidak bisa memulai timer maupun men-DQ. Lihat §2.2.
+- [x] ~~Fee selama masa sanggah (setelah LIVE, sebelum finalize)~~ → **tetap Fase 3** (70% treasury / 30% league), disengaja; spec §3.3 yang diperjelas, bukan kode. Lihat §3.2/§3.3.
 
-> ✅ **SEMUA ITEM SUDAH DIPUTUSKAN — DESAIN TERKUNCI.** Siap lanjut ke rencana implementasi kode (§7).
+> ✅ **SEMUA ITEM SUDAH DIPUTUSKAN — DESAIN TERKUNCI.** Batch liveness (Q-1/Q-2) dan koreksi dokumen (Q-4/Q-12/Q-13) sudah masuk kode dan test.
 
 ---
 

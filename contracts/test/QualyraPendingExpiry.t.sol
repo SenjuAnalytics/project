@@ -12,6 +12,8 @@ import {MockSuccessor} from "./mocks/MockSuccessor.sol";
 
 /// @dev A token that goes PENDING_EXPIRY after launch without starting its eligibility timer stops parking a
 ///      battle share: the next fee sends what it parked to the treasury, and later battle shares go there directly.
+///      A timer that starts but never resolves (no second qualifying close, no disqualification) has its own limit,
+///      UNRESOLVED_PENDING_GRACE after launch, so a quiet market cannot park fees forever either.
 contract QualyraPendingExpiryTest is CompetitionTestBase {
     // Local copy of the vault event so vm.expectEmit can match it by signature.
     event PendingBattlePotDrained(address indexed token, address indexed asset, uint256 amount);
@@ -94,7 +96,7 @@ contract QualyraPendingExpiryTest is CompetitionTestBase {
         assertEq(feeVault.treasuryBalance(address(0)) - treasuryBefore, BATTLE_SHARE);
     }
 
-    function test_aTokenThatStartedItsTimer_neverExpires() public {
+    function test_aTokenThatStartedItsTimer_waitsInsideTheUnresolvedGrace() public {
         _buy(1 ether);
         _startTimer();
         vm.warp(expiresAt + 1 days);
@@ -106,6 +108,27 @@ contract QualyraPendingExpiryTest is CompetitionTestBase {
 
         vm.expectRevert(abi.encodeWithSelector(QualyraCompetitionVault.PendingNotExpired.selector, address(token)));
         competition.releaseExpiredPending(address(token), address(0));
+    }
+
+    /// @notice A timer that started but never resolved is not a permanent parking spot either: after
+    ///         UNRESOLVED_PENDING_GRACE the pending pot goes to the treasury like any other unreachable battle share.
+    function test_aTimerThatNeverResolves_expiresAfterTheUnresolvedGrace() public {
+        _buy(1 ether);
+        _startTimer();
+        uint256 unresolvedAt = expiresAt + competition.UNRESOLVED_PENDING_GRACE();
+
+        vm.warp(unresolvedAt - 1);
+        assertFalse(competition.isPendingExpired(address(token)), "the grace is still running");
+
+        vm.warp(unresolvedAt);
+        assertTrue(competition.isPendingExpired(address(token)), "the timer never resolved: stop waiting");
+
+        // No fee will ever trigger the release for a token nobody trades, so anyone can.
+        uint256 treasuryBefore = feeVault.treasuryBalance(address(0));
+        vm.prank(bob);
+        competition.releaseExpiredPending(address(token), address(0));
+        assertEq(competition.pendingBattlePot(address(token), address(0)), 0);
+        assertEq(feeVault.treasuryBalance(address(0)) - treasuryBefore, BATTLE_SHARE);
     }
 
     function test_aTimerStartedAfterExpiry_parksAgain() public {

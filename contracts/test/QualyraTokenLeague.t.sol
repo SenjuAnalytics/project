@@ -750,4 +750,111 @@ contract QualyraTokenLeagueTest is CompetitionTestBase {
         vm.expectRevert(abi.encodeWithSelector(QualyraCompetitionVault.AlreadyBattled.selector, address(tokenA)));
         _scheduleBattle(address(tokenA), address(tokenC), _nextMidnight());
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // Liveness: a battle nobody reports has a way out (no pot may be locked by an absent operator)
+    // ---------------------------------------------------------------------------------------------
+
+    function test_expireBattle_isRefusedUntilTheGracePeriodHasRun() public {
+        uint256 start = _nextMidnight();
+        uint256 battleId = _scheduleBattle(address(tokenA), address(tokenB), start);
+
+        // Still live: not a candidate at all.
+        vm.warp(start + competition.BATTLE_DURATION() - 1);
+        vm.expectRevert(QualyraCompetitionVault.BattleNotExpired.selector);
+        competition.expireBattle(battleId);
+
+        // Over, but inside the grace the operator service still has to report.
+        vm.warp(start + competition.BATTLE_DURATION() + competition.BATTLE_RESULT_GRACE() - 1);
+        vm.expectRevert(QualyraCompetitionVault.BattleNotExpired.selector);
+        competition.expireBattle(battleId);
+    }
+
+    /// @notice With no result posted, anyone can close the battle as a Void after the grace period: each token gets
+    ///         exactly its own contribution back (buyback&burn of its own token) and no winner is crowned. A late
+    ///         result is then refused, so the fallback cannot be raced for the pot.
+    function test_expireBattle_voidsABattleNobodyReported() public {
+        uint256 start = _nextMidnight();
+        uint256 battleId = _scheduleBattle(address(tokenA), address(tokenB), start);
+        vm.warp(start);
+        _swap(keyA, bob, true, -1 ether, 1 ether);
+        _swap(keyB, bob, true, -1 ether, 1 ether);
+
+        // In-battle fees are tagged to the battle but still sit in the hook until settlement sweeps them in, so at
+        // this point neither the pot nor contributionOf reflect them yet. The invariant (contributions sum to the
+        // pot) still holds here, and this pre-sweep snapshot lets us prove the sweep actually moved fees in.
+        vm.warp(start + competition.BATTLE_DURATION() + competition.BATTLE_RESULT_GRACE());
+        uint256 contributionBeforeSweep = competition.contributionOf(battleId, address(tokenA));
+        assertGt(contributionBeforeSweep, 0);
+        assertGt(competition.contributionOf(battleId, address(tokenB)), 0);
+        assertEq(
+            competition.contributionOf(battleId, address(tokenA))
+                + competition.contributionOf(battleId, address(tokenB)),
+            competition.getBattle(battleId).pot
+        );
+
+        vm.prank(makeAddr("anyone"));
+        competition.expireBattle(battleId);
+
+        assertTrue(competition.getBattle(battleId).finalized);
+        assertEq(uint256(competition.getBattle(battleId).outcome), uint256(QualyraCompetitionVault.Outcome.Void));
+
+        // expireBattle -> _settle sweeps the live-window fees from the hook into the pot first (bumping
+        // contributionOf), THEN refunds each token exactly its own post-sweep contribution to its own buyback&burn
+        // (spec §5.5). Measure the contribution AFTER settlement so the assertion matches the fees actually swept in
+        // (same pattern as test_voidBattle_refundsEachTokenItsOwnContribution).
+        uint256 contributionA = competition.contributionOf(battleId, address(tokenA));
+        uint256 contributionB = competition.contributionOf(battleId, address(tokenB));
+        assertGt(contributionA, contributionBeforeSweep, "live-window fees swept into A's contribution at settle");
+        assertEq(contributionA + contributionB, competition.getBattle(battleId).pot);
+        assertEq(_funded(battleId, address(tokenA)), contributionA, "A refunded its own contribution");
+        assertEq(_funded(battleId, address(tokenB)), contributionB, "B refunded its own contribution");
+
+        vm.expectRevert(QualyraCompetitionVault.ResultAlreadyProposed.selector);
+        _proposeBattle(battleId, QualyraCompetitionVault.Outcome.WinnerA, 0.9e18, 0.1e18);
+    }
+
+    /// @notice A result the guardian vetoed leaves the battle open again, so the grace path still applies if the
+    ///         operator never re-proposes.
+    function test_expireBattle_stillWorksAfterAVeto() public {
+        uint256 start = _nextMidnight();
+        uint256 battleId = _scheduleBattle(address(tokenA), address(tokenB), start);
+        vm.warp(start + competition.BATTLE_DURATION());
+        _proposeBattle(battleId, QualyraCompetitionVault.Outcome.WinnerA, 0.9e18, 0.1e18);
+
+        vm.prank(guardian);
+        competition.vetoBattleResult(battleId);
+
+        vm.warp(start + competition.BATTLE_DURATION() + competition.BATTLE_RESULT_GRACE());
+        vm.prank(makeAddr("anyone"));
+        competition.expireBattle(battleId);
+        assertEq(uint256(competition.getBattle(battleId).outcome), uint256(QualyraCompetitionVault.Outcome.Void));
+    }
+
+    /// @notice Neither token can battle again once the battle settles, so anything still parked for them goes to the
+    ///         treasury at settlement instead of staying in the pending pot forever.
+    function test_settle_drainsPendingLeftBehindForABattledToken() public {
+        uint256 start = _nextMidnight();
+        uint256 battleId = _scheduleBattle(address(tokenA), address(tokenB), start);
+        vm.warp(start + competition.BATTLE_DURATION());
+
+        // A battle share tagged to a battle with no open pot parks in the token's pending pot.
+        uint256 parked = 0.5 ether;
+        uint256 alreadyParked = competition.pendingBattlePot(address(tokenA), address(0));
+        vm.deal(address(feeVault), address(feeVault).balance + parked);
+        vm.prank(address(feeVault));
+        competition.depositBattleFees{value: parked}(0, address(tokenA), address(0), parked);
+        assertEq(competition.pendingBattlePot(address(tokenA), address(0)), alreadyParked + parked);
+
+        _proposeBattle(battleId, QualyraCompetitionVault.Outcome.WinnerA, 0.6e18, 0.4e18);
+        skip(competition.BATTLE_CHALLENGE_PERIOD());
+
+        uint256 treasuryBefore = feeVault.treasuryBalance(address(0));
+        competition.finalizeBattle(battleId);
+
+        assertEq(competition.pendingBattlePot(address(tokenA), address(0)), 0, "pending drained at settlement");
+        assertEq(
+            feeVault.treasuryBalance(address(0)) - treasuryBefore, alreadyParked + parked, "and booked to the treasury"
+        );
+    }
 }

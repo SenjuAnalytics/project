@@ -282,6 +282,86 @@ contract QualyraTraderLeagueTest is CompetitionTestBase {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // Liveness: a week nobody reported has a way out
+    // ---------------------------------------------------------------------------------------------
+
+    function test_skipWeek_isRefusedBeforeTheLeagueAndBeforeTheGrace() public {
+        _depositLeague(address(0), 1 ether);
+
+        // No league, no weeks to skip.
+        vm.expectRevert(QualyraCompetitionVault.WeekNotInLeague.selector);
+        competition.skipWeek(THIS_WEEK);
+
+        competition.startLeague();
+        vm.expectRevert(QualyraCompetitionVault.WeekNotInLeague.selector);
+        competition.skipWeek(THIS_WEEK); // the league's own weeks start at FIRST_WEEK
+
+        // Reported weeks only run out of time LEAGUE_SKIP_GRACE after they end.
+        vm.warp(competition.weekEndsAt(FIRST_WEEK) + competition.LEAGUE_SKIP_GRACE() - 1);
+        vm.expectRevert(QualyraCompetitionVault.WeekSkipTooEarly.selector);
+        competition.skipWeek(FIRST_WEEK);
+    }
+
+    /// @notice With no winners ever posted, anyone can close the week after the grace period; its whole pool joins
+    ///         the week in progress, so fees nobody reported on are not stranded.
+    function test_skipWeek_movesAnUnreportedWeeksPoolIntoTheOpenWeek() public {
+        _fundFirstWeek(10 ether, 1_000e6);
+
+        vm.warp(competition.weekEndsAt(FIRST_WEEK) + competition.LEAGUE_SKIP_GRACE());
+        uint256 toWeek = competition.currentWeek();
+        uint256 ethBefore = competition.weekPool(toWeek, address(0));
+        uint256 dollarBefore = competition.weekPool(toWeek, address(dollar));
+
+        vm.prank(carol); // anyone can do this
+        competition.skipWeek(FIRST_WEEK);
+
+        assertGt(competition.getWeekResult(FIRST_WEEK).finalizedAt, 0, "the week is closed");
+        assertEq(competition.weekPool(toWeek, address(0)) - ethBefore, 10 ether);
+        assertEq(competition.weekPool(toWeek, address(dollar)) - dollarBefore, 1_000e6);
+        // Moving the ledger must not move a second copy of the funds.
+        assertEq(address(competition).balance, competition.accounted(address(0)));
+
+        // A week is skipped at most once; a proposal would have gone through the normal path instead.
+        vm.expectRevert(QualyraCompetitionVault.NoPendingResult.selector);
+        competition.skipWeek(FIRST_WEEK);
+    }
+
+    function test_skipWeek_refusesAWeekWithAPendingProposal() public {
+        _fundFirstWeek(1 ether, 0);
+        vm.warp(competition.weekEndsAt(FIRST_WEEK));
+        _depositLeague(address(0), 2 ether); // lands in FIRST_WEEK + 1, now in progress
+
+        vm.warp(competition.weekEndsAt(FIRST_WEEK + 1));
+        _proposeWinners(FIRST_WEEK + 1, [first, second, third, address(0), address(0)]);
+
+        vm.warp(competition.weekEndsAt(FIRST_WEEK + 1) + competition.LEAGUE_SKIP_GRACE());
+        // The challenge period path is what should run for a week that has a result.
+        vm.expectRevert(QualyraCompetitionVault.ResultAlreadyProposed.selector);
+        competition.skipWeek(FIRST_WEEK + 1);
+
+        // The week nobody reported skips at the same moment, and the proposed one keeps its pool.
+        uint256 week = competition.currentWeek();
+        uint256 ethBefore = competition.weekPool(week, address(0));
+        competition.skipWeek(FIRST_WEEK);
+        assertEq(competition.weekPool(week, address(0)) - ethBefore, 1 ether);
+        assertEq(competition.weekPool(FIRST_WEEK + 1, address(0)), 2 ether);
+    }
+
+    /// @notice A skipped week's pool is already in the open week, so the sixty-day rollover has nothing to move and
+    ///         cannot pay it twice.
+    function test_rolloverUnclaimed_ignoresASkippedWeeksPool() public {
+        _fundFirstWeek(1 ether, 0);
+        vm.warp(competition.weekEndsAt(FIRST_WEEK) + competition.LEAGUE_SKIP_GRACE());
+        competition.skipWeek(FIRST_WEEK);
+
+        vm.warp(competition.getWeekResult(FIRST_WEEK).finalizedAt + 60 days);
+        uint256 week = competition.currentWeek();
+        uint256 before = competition.weekPool(week, address(0));
+        competition.rolloverUnclaimed(FIRST_WEEK);
+        assertEq(competition.weekPool(week, address(0)), before);
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Pause and migration
     // ---------------------------------------------------------------------------------------------
 

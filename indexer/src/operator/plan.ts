@@ -14,6 +14,10 @@ export const BATTLE_CHALLENGE_PERIOD = DAY;
 export const LEAGUE_CHALLENGE_PERIOD = 2 * DAY;
 export const TRANCHE_INTERVAL = 30 * 60;
 export const MAX_SCHEDULE_LEAD = 7 * DAY;
+/** How long a finished battle may wait for a result before anyone can close it as a Void (expireBattle). */
+export const BATTLE_RESULT_GRACE = 3 * DAY;
+/** How long a finished league week may wait for winners before anyone can skip it (skipWeek). */
+export const LEAGUE_SKIP_GRACE = 14 * DAY;
 
 export interface BattleState {
   id: number;
@@ -52,6 +56,8 @@ export interface TokenState {
   eligible: boolean;
   disqualified: boolean;
   hasBattled: boolean;
+  /** When its first qualifying close started the 24h eligibility timer, zero before that. */
+  firstCloseAt: number;
   /** When its reported market cap went below the $100k threshold, zero while it holds it. */
   belowThresholdSince: number;
   /** Whether its pool's 30-minute average is ready (QualyraHook.twapOf). */
@@ -86,6 +92,20 @@ export function battlesToFinalize(battles: BattleState[], now: number): BattleSt
 export function battlesInChallenge(battles: BattleState[], now: number): BattleState[] {
   return battles.filter(
     b => !b.finalized && b.outcome !== OUTCOME.None && now < b.proposedAt + BATTLE_CHALLENGE_PERIOD,
+  );
+}
+
+/**
+ * Battles whose live window ended and that still have no result long after: anyone can close them as a Void
+ * (expireBattle), which refunds each token its own contribution. The operator pass gets the whole grace period to
+ * post a result first, including for a vetoed one. Cancelled or unbooked battles are finalized and never show up.
+ */
+export function battlesToExpire(battles: BattleState[], now: number): BattleState[] {
+  return battles.filter(
+    b =>
+      !b.finalized &&
+      b.outcome === OUTCOME.None &&
+      now >= b.startTime + BATTLE_DURATION + BATTLE_RESULT_GRACE,
   );
 }
 
@@ -135,6 +155,24 @@ export function weeksInChallenge(weeks: WeekState[], now: number): WeekState[] {
   return weeks.filter(w => w.proposedAt > 0 && w.finalizedAt === 0 && !w.closed && now < w.proposedAt + LEAGUE_CHALLENGE_PERIOD);
 }
 
+/**
+ * League weeks that ended with nobody posting winners: after the grace period anyone can skip them (skipWeek), which
+ * moves the whole pool into the week in progress. A week with a proposal waits for the challenge period instead.
+ */
+export function weeksToSkip(firstLeagueWeek: number, weeks: WeekState[], now: number): WeekState[] {
+  if (firstLeagueWeek === 0) return [];
+  return weeks
+    .filter(
+      w =>
+        w.week >= firstLeagueWeek &&
+        w.proposedAt === 0 &&
+        w.finalizedAt === 0 &&
+        !w.closed &&
+        now >= Number(weekEnd(BigInt(w.week))) + LEAGUE_SKIP_GRACE,
+    )
+    .sort((a, b) => a.week - b.week);
+}
+
 /** Next 00:00 UTC a battle can start at, leaving at least `minLead` seconds to book it. */
 export function nextBattleStart(now: number, minLead: number): number {
   const midnight = (Math.floor(now / DAY) + 1) * DAY;
@@ -175,8 +213,12 @@ export function tokensToPoke(
   return tokens.filter(t => {
     if (t.disqualified || !t.averageReady) return false;
     const key = t.token.toLowerCase();
+    // Timer started but never resolved: nobody else will report a close for it, so its own check is the only way to
+    // either confirm the threshold (eligible, then bookable) or record a drop (disqualified, pending released).
+    const limbo = t.firstCloseAt !== 0 && !t.eligible && !t.disqualified && !t.hasBattled;
     const matters =
       inBattle.has(key) ||
+      limbo ||
       (t.belowThresholdSince !== 0 && !t.hasBattled) ||
       (opts.bookingOpen && isBookable(t));
     const quiet = now - t.lastSwapAt >= opts.quietSeconds;
