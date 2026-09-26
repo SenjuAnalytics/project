@@ -1,4 +1,5 @@
 {
+  "_status": "STALE - awaiting redeploy. This is the 2026-09-21 testnet deploy, predating audit batches 1+2 (no expireBattle / skipWeek / MAX_PRICE_AGE / 90-day pending tier / isPendingExpired routing in FeeVault). All feeds are address(0). Regenerate with `cd indexer && npm run gen-deployments` after the next deploy - this marker disappears then. See deployments/README.md.",
   "chainId": 46630,
   "network": "robinhood-chain-testnet",
   "deployBlock": 122327405,

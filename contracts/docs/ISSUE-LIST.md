@@ -8,14 +8,16 @@
 
 **Ringkasan: tidak ada celah yang bisa mencuri dana.** Yang ada: (a) satu jalur di mana uang bisa
 **beku** kalau operator mati, (b) dua kebijakan yang perlu Anda putuskan, (c) beberapa kekakuan
-robustness, (d) 3 masalah frontend/indexer yang jadi penghalang rencana custom pair.
+robustness, (d) 3 masalah kecil frontend/indexer (bukan penghalang apa pun — custom pair ditunda,
+lihat §Ditunda).
 
 ---
 
 ## Status implementasi (diperbarui setelah Batch 1+2)
 
-Batch **1 (liveness)** dan **2 (pending & routing)** sudah dikerjakan di working tree (belum
-di-commit, belum `forge test` di mesin Anda):
+Batch **1 (liveness)**, **2 (pending & routing)**, **3 (kebijakan)** dan **5 (dokumen)** sudah
+selesai: di-commit di branch `arena/01a0d9d0-project`, di-merge ke `main`, dan **lulus `forge test`
+237/237 + indexer 66/66 di mesin Anda** (ABI sudah di-sync lewat `sync-abi.mjs`):
 
 | ID | Status | Di mana |
 |---|---|---|
@@ -34,6 +36,22 @@ di-commit, belum `forge test` di mesin Anda):
 
 ---
 
+## Ditunda (menunggu deploy kontrak baru)
+
+**Custom pair / pendaftaran quote asset terbuka ditarik dari rencana** (keputusan 2026-09-26):
+fitur ini belum diperlukan, dan desainnya (`CUSTOM-PAIR-DESIGN.md`) sudah **dihapus** dari repo.
+
+Yang ikut ditunda karena hanya relevan untuk fitur itu:
+
+- **Q-5** (probe transfer saat `setQuoteAsset`) — tidak berbahaya selama listing masih manual.
+- Label "penghalang custom pair" pada **Q-9**/**Q-11**. Temuannya sendiri **tetap berlaku** sebagai
+  perbaikan kecil frontend/indexer, hanya tanpa status penghalang dan tanpa prioritas.
+- **Batch 4** di tabel urutan kerja (isinya Q-5, Q-9, Q-10, Q-11).
+
+Kembalikan ke meja **setelah kontrak pasca-audit di-redeploy** dan fitur ini benar-benar mau dibuka.
+
+---
+
 ## 0. Tabel ringkas (urut prioritas)
 
 | ID | Tingkat | Area | Masalah singkat | Butuh keputusan? | Ukuran perbaikan |
@@ -42,18 +60,18 @@ di-commit, belum `forge test` di mesin Anda):
 | **Q-2** | Sedang | Vault + indexer | Token yang **timer 24 jam-nya sudah mulai** lalu pool-nya sepi: tidak pernah eligible, tidak pernah DQ, pending-nya menumpuk tanpa jalur otomatis (keeper tidak mem-poke, `releaseExpiredPending` menolak). **[by design]**, tapi lubangnya nyata. | Ya (perlu tier kedua?) | Kecil (indexer saja) |
 | **Q-3** | Sedang | Hook / oracle | TWAP **tanpa batas umur**: pool sepi 3 minggu tetap melaporkan harga terakhir sebagai rata-rata sah → sebuah poke bisa membuat token **eligible** (dapat akses uang battle) dari harga basi. | Ya | Kecil (±5 baris + test) |
 | **Q-4** | Sedang | Routing fee | Fee yang terjadi **setelah window live 24 jam** (masa sanggah + jeda finalize) masuk Fase 3: 70% treasury / 30% league, bukan ke pot. **[by design, ada test]** — spec ambigu. | Ya | Sangat kecil (1 baris) atau 0 (update spec) |
-| **Q-5** | Sedang | Factory / custom pair | Belum ada **probe transfer** saat mendaftarkan quote asset → token fee-on-transfer / rebasing bisa merusak akuntansi curve & vault. Tidak berbahaya sekarang (listing manual), jadi penghalang begitu pintu permissionless dibuka. | Ya (ikut custom pair) | Kecil |
+| **Q-5** | Sedang | Factory / quote asset | **[DITUNDA]** Belum ada **probe transfer** saat mendaftarkan quote asset → token fee-on-transfer / rebasing bisa merusak akuntansi curve & vault. Tidak berbahaya selama listing manual; hanya relevan kalau pendaftaran dibuka ke publik. | Tidak (ditunda) | Kecil |
 | **Q-6** | Rendah | Vault | `pendingBattlePot` milik token yang **sudah bertanding** tidak punya pintu keluar sama sekali (tidak bisa DQ lagi, tidak bisa expired). Dana parkir permanen. | Tidak | Sangat kecil |
 | **Q-7** | Rendah | Trader League | `rolloverUnclaimed` bisa menggulirkan dana ke **minggu yang klaimnya sudah tutup** → dana tersangkut (tidak bisa diklaim lagi). | Tidak | Sangat kecil |
 | **Q-8** | Rendah | Vault + FeeVault | Ada **dua definisi** "pending expiry" yang tidak identik (FeeVault tanpa pengecualian grace graduasi) → perilaku bisa berbeda di jendela sempit. | Tidak | Kecil |
-| **Q-9** | Rendah* | Frontend | `getQuoteAssetPriceUsd` fallback ke **$1** untuk simbol tak dikenal → harga palsu untuk pair baru. | Tidak | Sangat kecil |
+| **Q-9** | Rendah | Frontend | `getQuoteAssetPriceUsd` fallback ke **$1** untuk simbol tak dikenal → harga palsu untuk pair baru. | Tidak | Sangat kecil |
 | **Q-10** | Rendah | Frontend | Pengukuran reserve pool memakai `balanceOf(pool)` — **tidak berlaku untuk v4** (token ada di PoolManager), lalu jatuh ke angka hardcoded yang tampil seolah reserve nyata. | Tidak | Kecil |
-| **Q-11** | Rendah* | Indexer | `PAIR_ASSETS` hardcoded → token pair baru **tak terlihat** oleh leaderboard/scoring. | Tidak | Kecil |
+| **Q-11** | Rendah | Indexer | `PAIR_ASSETS` hardcoded → token pair baru **tak terlihat** oleh leaderboard/scoring. | Tidak | Kecil |
 | **Q-12** | Dokumen | Spec | `FEE-AND-BATTLE-SPEC.md` **belum punya tabel hadiah Trader League**; kode & README sudah 40/30/15/10/5 (top 5). | Tidak | Sangat kecil |
 | **Q-13** | Dokumen | Spec | Spec §2.2 bilang eligibility berlaku **di curve & pool**; kenyataannya **pool-only** (MC maksimum di curve ≈ 20,58 ETH ≈ $54,7k). | Tidak | Sangat kecil |
 | **Q-14** | Dokumen | Design note | `TWAP-HARDENING-DESIGN.md §6` masih mencantumkan "sticky eligibility" sebagai open decision, padahal sudah diselesaikan (aturan continuous-maintenance). | Tidak | Sangat kecil |
 
-\* Rendah hari ini, tapi **penghalang** begitu fitur custom pair dibuka.
+\* Custom pair ditunda, jadi Q-5/Q-9/Q-11 **tidak lagi jadi prasyarat apa pun** (§Ditunda).
 
 ---
 
@@ -227,28 +245,22 @@ function feeBucketOf(address token) external view returns (uint256) {
 
 ---
 
-### Q-5 — Belum ada probe transfer untuk quote asset baru **[Sedang — penghalang custom pair]**
+### Q-5 — Belum ada probe transfer untuk quote asset baru **[DITUNDA — menunggu deploy kontrak baru]**
 
-**Apa yang terjadi.** `setQuoteAsset` memverifikasi `decimals()` (6–36) dan menjalankan
-`checkEconomics`, tapi tidak pernah menguji **perilaku transfer**. Token fee-on-transfer,
-rebasing, atau yang memblokir transfer bisa lolos.
+**Status: ditunda** (keputusan 2026-09-26). Rencana custom pair ditarik dari repo, dan hanya fitur itu
+yang membuat temuan ini penting: selama listing masih lewat tim (manual + verifikasi off-chain),
+`setQuoteAsset` yang `onlyOwner` + timelock sudah cukup.
 
-**Dampak.** Aman selama listing manual (tim memverifikasi off-chain). Begitu pendaftaran dibuka
-untuk umum, token seperti itu bisa merusak akuntansi curve (`quoteReserve`) dan pola
-"kirim dulu, baru lapor" di vault (`_receive` membandingkan saldo nyata → revert terus-menerus,
-atau lebih buruk: selisih senyap untuk token yang memotong saat keluar).
+**Ringkasan temuan (disimpan supaya tidak hilang).** `setQuoteAsset` memverifikasi `decimals()`
+(6–36) dan menjalankan `checkEconomics`, tapi tidak pernah menguji **perilaku transfer**. Token
+fee-on-transfer, rebasing, atau yang memblokir transfer bisa lolos, dan itu akan merusak akuntansi
+curve (`quoteReserve`) serta pola "kirim dulu, baru lapor" di vault (`_receive` membandingkan saldo
+nyata → revert terus-menerus, atau selisih senyap untuk token yang memotong saat keluar).
 
-**Saran perbaikan.** Probe di dalam transaksi pendaftaran (lihat `CUSTOM-PAIR-DESIGN.md §5.3`):
-```solidity
-function _probeTransfer(address asset, address from, uint256 amount) private {
-    uint256 before = IERC20(asset).balanceOf(address(this));
-    IERC20(asset).safeTransferFrom(from, address(this), amount);
-    if (IERC20(asset).balanceOf(address(this)) != before + amount) revert InvalidAssetTransfer();
-    IERC20(asset).safeTransfer(from, amount);
-    if (IERC20(asset).balanceOf(address(this)) != before) revert InvalidAssetTransfer();
-}
-```
-Ditambah tombol mati yang sudah ada (`disableQuoteAsset`) sebagai jaring terakhir.
+**Perbaikan nanti (kalau pintu pair dibuka).** Probe di dalam transaksi pendaftaran: `transferFrom`
+sejumlah kecil ke factory, pastikan `balanceOf` naik tepat sebesar itu, lalu kirim balik dan pastikan
+kembali ke saldo semula; revert kalau tidak sama. Tombol `disableQuoteAsset` yang sudah ada tetap
+jadi jaring terakhir.
 
 ---
 
@@ -304,12 +316,13 @@ dan panggil dari `FeeVault` (hapus perhitungan `launchedAt` lokal).
 
 ---
 
-### Q-9 — Frontend: fallback $1 untuk simbol tak dikenal **[Rendah, penghalang custom pair]**
+### Q-9 — Frontend: fallback $1 untuk simbol tak dikenal **[Rendah — opsional]**
 
 **Bukti.** `frontend/lib/pricing.ts:40` → `return STOCK_FALLBACK_PRICES[sym] ?? 1`.
 
-**Dampak.** Begitu pair baru di-list, UI menampilkan **$1/unit** untuk aset itu — angka palsu yang
-terlihat seperti data nyata. Semua MC, volume, dan hadiah yang ditampilkan ikut salah.
+**Dampak.** Untuk simbol yang tidak ada di peta harga, UI menampilkan **$1/unit** — angka palsu yang
+terlihat seperti data nyata. Semua MC, volume, dan hadiah yang ditampilkan ikut salah. Hari ini
+tertutup karena 5 aset tetap sudah ada di peta; celahnya terbuka begitu ada aset baru.
 
 **Saran perbaikan.** Balikkan menjadi *fail-closed*: `?? 0`, dan `quoteToUsd` mengembalikan
 `undefined` saat rate tidak diketahui → UI menampilkan "—" (atau menyembunyikan angka USD), bukan
@@ -325,8 +338,8 @@ angka karangan.
 ke angka **hardcoded** (`pooledBase = 4118060` untuk PONS, `8345598` untuk AI, `pooledQuote =
 1121.21 / 890.39`) yang ditampilkan seolah reserve nyata.
 
-**Dampak.** Data kedalaman pool di UI tidak dapat dipercaya (angka tetap dari kode). Ini juga
-parameter yang akan dipakai untuk gate kedalaman di rencana custom pair, jadi ukurannya harus benar.
+**Dampak.** Data kedalaman pool di UI tidak dapat dipercaya (angka tetap dari kode, ditampilkan
+seolah reserve nyata).
 
 **Saran perbaikan.** Untuk v4, ukuran yang benar adalah likuiditas posisi:
 `StateLibrary.getSlot0(poolId)` + `getLiquidity(poolId)` → nilai ≈ `2 × L × √P` (atau pakai
@@ -335,14 +348,15 @@ menampilkan reserve palsu.
 
 ---
 
-### Q-11 — Indexer: `PAIR_ASSETS` hardcoded **[Rendah, penghalang custom pair]**
+### Q-11 — Indexer: `PAIR_ASSETS` hardcoded **[Rendah — opsional]**
 
 **Bukti.** `indexer/src/config.ts:177` mendaftar ETH/USDG/NVDA/AAPL/SPY beserta harga USD-nya.
 Token dengan aset pair di luar daftar itu tidak dapat basis USD → tidak bisa dihitung Qualified
 Volume-nya.
 
-**Dampak.** Token pair baru tidak muncul di leaderboard/scoring; kalau nanti dibuat fallback $1,
-hadiah akan salah hitung (lihat Q-9).
+**Dampak.** Aset pair di luar daftar itu tidak punya basis USD → token-nya tidak muncul di
+leaderboard/scoring; kalau nanti dibuat fallback $1, hadiah akan salah hitung (lihat Q-9).
+Hari ini tidak terasa karena semua pair aktif (ETH/USDG/NVDA/AAPL/SPY) ada di daftar.
 
 **Saran perbaikan.** Baca daftar pair dari factory (`quoteAssetCount`/`quoteAssetAt`/
 `quoteAssetConfig`) + registry basis USD eksplisit per aset (Chainlink untuk yang punya feed,
@@ -400,7 +414,7 @@ admin/operator/guardian; `renounceOwnership` diblokir; `prizeShareBps` berjumlah
 | **1 — Liveness** | Q-1 (+ keputusan bentuk fallback) | Tidak ada lagi dana yang bisa beku karena operator mati. |
 | **2 — Pending & routing** | Q-2 (keeper), Q-6, Q-7, Q-8 | Tidak ada dana menunggu manusia; invariant pending bersih. |
 | **3 — Kebijakan** | Q-3, Q-4 setelah Anda putuskan | Aturan main final antara pot & treasury; harga basi tidak lagi memutuskan. |
-| **4 — Persiapan custom pair** | Q-5, Q-9, Q-10, Q-11 | 3 penghalang + 1 pengaman selesai, baru pintu pair dibuka. |
+| ~~**4 — Persiapan custom pair**~~ | ~~Q-5, Q-9, Q-10, Q-11~~ | **DITUNDA** — custom pair ditarik dari rencana (menunggu deploy kontrak baru). Q-9/Q-10/Q-11 tetap ada sebagai perbaikan kecil opsional. |
 | **5 — Dokumen** | Q-12, Q-13, Q-14 | Satu sumber kebenaran antara kode, spec, README. |
 
 Setiap batch: perubahan + regression test + update dokumen dalam satu commit, lalu Anda jalankan

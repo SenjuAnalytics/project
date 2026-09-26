@@ -4,7 +4,19 @@ On-chain verification of the live Qualyra deployment on **Robinhood Chain Testne
 (chainId **46630 / 0xB626**, RPC `https://rpc.testnet.chain.robinhood.com`).
 
 All checks below were run **read-only** via JSON-RPC (`eth_call` / `eth_getCode`) against the
-deployed contracts, cross-checked with the contract source in `src/`. No private keys were used
+deployed contracts, cross-checked with the contract source in `src/`.
+
+> ## ⚠️ Status (2026-09-26): menunggu deploy kontrak baru — dokumen ini = snapshot deploy lama
+>
+> Seluruh isi di bawah menggambarkan deploy **2026-09-21**, yaitu **sebelum** Batch 1+2 audit.
+> Kontrak di alamat itu **tidak punya** `expireBattle`, `skipWeek`, `MAX_PRICE_AGE`, tier pending
+> 90 hari, maupun routing `isPendingExpired` — dan semua price feed-nya masih `address(0)`, jadi
+> eligibility/DQ di sana memang **tidak aktif**.
+>
+> **Ini bukan temuan dan bukan regresi.** Kontrak non-upgradeable dan kontraknya belum dinyatakan
+> siap, jadi alamat lama tetap dipakai sampai ada deploy baru. Status yang benar: **menunggu
+> redeploy**. Setelah redeploy: `cd indexer && npm run gen-deployments` → `node scripts/sync-abi.mjs`
+> → ulangi §3–§5 di alamat baru. Lihat `deployments/README.md`. No private keys were used
 for verification; state-changing steps (launch / buy / sell) were executed by the project wallets
 with `cast send`.
 
