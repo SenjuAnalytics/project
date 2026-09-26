@@ -34,6 +34,27 @@ selesai: di-commit di branch `arena/01a0d9d0-project`, di-merge ke `main`, dan *
 > (ABI baru: `expireBattle`, `skipWeek`, `isPendingExpired` — tanpa ini keeper tidak bisa mengirim
 > fungsi baru), lalu `forge test`. Indexer: `npm test` (66 test, lulus di sandbox).
 
+### Perubahan kurva terbaru — refund & batas harga `minTokensOut` **[belum `forge test`]**
+
+Dua perubahan `QualyraBondingCurve` yang Anda setujui ("lakukan kedua nya"), mengikuti Pons
+(`contracts/docs/pons-reference/pons_src.json`, `PonsV2BondingCurve.buy()`):
+
+| # | Perubahan | Alasan |
+|---|---|---|
+| **C-1** | `event BuyRefunded(address indexed buyer, uint256 amount)`, di-emit saat `q.refund != 0` | `Bought.amountIn` hanya mencatat bagian yang **terpakai**, jadi tanpa event ini uang yang kembali tidak punya jejak on-chain. Refund selalu ke `msg.sender`; lewat router, `buyer` = router lalu diteruskan ke pemanggil. |
+| **C-2** | `minTokensOut` dibaca sebagai batas **HARGA** (`Math.mulDiv(amountIn, tokensOut, amountInUsed)`), bukan kuantitas | Buy yang melewati threshold di-clamp; dengan aturan lama ia revert `SlippageExceeded`, artinya buy yang dihitung dari state yang sudah bergerak bisa di-grief jadi gagal. Sekarang: partial fill + sisanya kembali dalam transaksi yang sama. Tanpa clamp, hasilnya persis sama dengan aturan lama (`tokensOut >= minTokensOut`). `mulDiv` dipakai supaya bound ekstrem (`type(uint256).max`) tetap `SlippageExceeded`, bukan panic `0x11`. |
+
+Test baru: 6 di `contracts/test/QualyraLaunch.t.sol` — event refund muncul saat kelebihan dibalikin,
+tidak muncul saat buy biasa, partial fill sukses + sisa kembali, bound masih menggigit saat partial
+fill, bound = kuantitas saat tanpa clamp, dan bound ekstrem = `SlippageExceeded` (bukan panic).
+Tes lama `test_trade_revertsOnSlippageAndDeadline` (bound `MAX`) tetap harus lulus.
+
+Belum diverifikasi: sandbox tidak bisa menjalankan `forge`. Di mesin Anda: `forge test` → kalau hijau,
+`forge build` + `node scripts/sync-abi.mjs` (**ABI kurva berubah**: event `BuyRefunded` bertambah,
+`contracts/abi/QualyraBondingCurve.json` + `frontend/lib/abis/qualyraBondingCurve.ts` ikut berubah).
+Indexer tidak terpengaruh (log diambil per-event, event baru tidak di-decode). `FEE-AND-BATTLE-SPEC.md`
+belum menyebut refund/bound harga — kandidat tambahan dokumen berikutnya.
+
 ---
 
 ## Ditunda (menunggu deploy kontrak baru)
