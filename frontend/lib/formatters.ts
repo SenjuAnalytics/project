@@ -147,7 +147,10 @@ export function priceMinMove(values: number[]): number {
  * Formats large USD currency metrics into human-readable compact representations:
  * e.g., $1.25T, $45.20B, $8.40M, $120.5K, $25.00
  */
-export function formatUsd(n: number): string {
+export function formatUsd(n: number | undefined): string {
+  // undefined == "no price basis" (an unknown quote asset, Q-9) — say so,
+  // instead of printing a fabricated $0.00 next to real numbers.
+  if (n === undefined) return '—'
   if (!n || isNaN(n)) return '$0.00'
   const abs = Math.abs(n)
   const sign = n < 0 ? '-' : ''

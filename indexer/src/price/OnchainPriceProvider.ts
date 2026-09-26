@@ -36,6 +36,11 @@ import { ConstantPriceProvider } from "./ConstantPriceProvider.ts";
 import { V4SwapEvent, V4InitializeEvent } from "../abi/index.ts";
 import type { AssetPrice, PriceProvider } from "./PriceProvider.ts";
 import { getLogsResilient } from "../rpc.ts";
+import {
+  registryKnown,
+  registrySnapshot as snapshotRegistry,
+  type QuoteAssetRegistry,
+} from "../quoteAssetRegistry.ts";
 
 const Q192 = 1n << 192n;
 
@@ -71,6 +76,12 @@ export interface OnchainPriceConfig {
   usdgDecimals?: number;
   /** USDG USD price in micro-USD (pinned stablecoin basis, default 1_000_000). */
   usdgUsdMicro?: bigint;
+  /**
+   * The factory's quote-asset registry at `blockNumber` (live path always
+   * passes one — jobs.ts): the source of truth for which pair assets exist
+   * (listed AND enabled at the pin) and for their DECIMALS.
+   */
+  registry: QuoteAssetRegistry;
 }
 
 /** v4 PoolId = keccak256(abi.encode(PoolKey)). */
@@ -151,11 +162,18 @@ type ResolvedPrice = { micro: bigint; decimals: number; source: string };
 export class OnchainPriceProvider implements PriceProvider {
   readonly source: string;
   private readonly prices: Map<string, ResolvedPrice>;
-  private readonly fallback = new ConstantPriceProvider();
+  private readonly fallback: ConstantPriceProvider;
+  private readonly registry: QuoteAssetRegistry;
 
-  private constructor(source: string, prices: Map<string, ResolvedPrice>) {
+  private constructor(
+    source: string,
+    prices: Map<string, ResolvedPrice>,
+    registry: QuoteAssetRegistry,
+  ) {
     this.source = source;
     this.prices = prices;
+    this.registry = registry;
+    this.fallback = new ConstantPriceProvider(registry);
   }
 
   /**
@@ -166,8 +184,15 @@ export class OnchainPriceProvider implements PriceProvider {
    * a misconfigured PoolKey/PoolManager fails loudly instead of pricing ETH $0.
    */
   static async load(cfg: OnchainPriceConfig): Promise<OnchainPriceProvider> {
-    const ethDecimals = cfg.ethDecimals ?? 18;
-    const usdgDecimals = cfg.usdgDecimals ?? 6;
+    // Decimals come from the on-chain registry (the factory verified them
+    // against the token's decimals() at setQuoteAsset); the optional config
+    // fields are only a fallback for older callers.
+    const ethDecimals =
+      cfg.registry[cfg.poolKey.currency0.toLowerCase()]?.decimals ??
+      cfg.ethDecimals ?? 18;
+    const usdgDecimals =
+      cfg.registry[cfg.poolKey.currency1.toLowerCase()]?.decimals ??
+      cfg.usdgDecimals ?? 6;
     const usdgUsdMicro = cfg.usdgUsdMicro ?? 1_000_000n;
     const pageSize = cfg.pageSize && cfg.pageSize > 0n ? cfg.pageSize : 5000n;
 
@@ -221,14 +246,20 @@ export class OnchainPriceProvider implements PriceProvider {
       decimals: usdgDecimals,
       source: "pinned-usd-1",
     });
-    return new OnchainPriceProvider(source, prices);
+    return new OnchainPriceProvider(source, prices, cfg.registry);
   }
 
   priceOf(quoteAssetAddr: string): AssetPrice | undefined {
-    const hit = this.prices.get(quoteAssetAddr.toLowerCase());
+    const lc = quoteAssetAddr.toLowerCase();
+    // Registry gate (ISSUE-LIST Q-11 items 2-3): an asset not listed+enabled
+    // in the factory registry at the pinned block is NEVER priced — not even
+    // via the constant basis, and never guessed as ETH.
+    if (!registryKnown(this.registry, lc)) return undefined;
+    const hit = this.prices.get(lc);
     if (hit) return { micro: hit.micro, decimals: hit.decimals };
-    // Assets without an on-chain pool yet -> documented constant basis.
-    return this.fallback.priceOf(quoteAssetAddr);
+    // Assets without an on-chain pool yet -> documented constant basis
+    // (itself registry-gated; decimals from the registry).
+    return this.fallback.priceOf(lc);
   }
 
   snapshot(): Record<string, { micro: string; decimals: number; source: string }> {
@@ -250,5 +281,9 @@ export class OnchainPriceProvider implements PriceProvider {
       out[addr] = merged.get(addr)!;
     }
     return out;
+  }
+
+  registrySnapshot(): Record<string, { decimals: number; enabled: boolean }> {
+    return snapshotRegistry(this.registry);
   }
 }

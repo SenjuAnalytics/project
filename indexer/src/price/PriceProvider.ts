@@ -38,4 +38,12 @@ export interface PriceProvider {
    * used, embedded into the dataset config so hashes stay reproducible.
    */
   snapshot(): Record<string, { micro: string; decimals: number; source: string }>;
+  /**
+   * Deterministic snapshot (sorted lowercased-address keys) of the on-chain
+   * quote-asset REGISTRY the provider was built from, embedded into the dataset
+   * so the datasetHash pins the exact registry state used (existence +
+   * decimals). Empty when the provider runs without a registry (offline
+   * legacy default — build.ts's DEFAULT_PRICES).
+   */
+  registrySnapshot(): Record<string, { decimals: number; enabled: boolean }>;
 }

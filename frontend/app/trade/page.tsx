@@ -340,8 +340,8 @@ export default function TradePage({ searchParams }: { searchParams?: Promise<{ p
       setAuthoritativeFields({
         id,
         price,
-        mcap: quoteToUsd(price * 1_000_000_000, curProject.quoteAsset) ?? price * 1_000_000_000,
-        vol24: quoteToUsd(chainHistory.volume24h, curProject.quoteAsset) ?? chainHistory.volume24h,
+        mcap: quoteToUsd(price * 1_000_000_000, curProject.quoteAsset),
+        vol24: quoteToUsd(chainHistory.volume24h, curProject.quoteAsset),
         chg: chainHistory.change24h,
       })
     } else {

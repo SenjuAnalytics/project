@@ -34,7 +34,7 @@ selesai: di-commit di branch `arena/01a0d9d0-project`, di-merge ke `main`, dan *
 > (ABI baru: `expireBattle`, `skipWeek`, `isPendingExpired` — tanpa ini keeper tidak bisa mengirim
 > fungsi baru), lalu `forge test`. Indexer: `npm test` (66 test, lulus di sandbox).
 
-### Perubahan kurva terbaru — refund & batas harga `minTokensOut` **[belum `forge test`]**
+### Perubahan kurva — refund & batas harga `minTokensOut` **[terverifikasi & merged]**
 
 Dua perubahan `QualyraBondingCurve` yang Anda setujui ("lakukan kedua nya"), mengikuti Pons
 (`contracts/docs/pons-reference/pons_src.json`, `PonsV2BondingCurve.buy()`):
@@ -47,13 +47,28 @@ Dua perubahan `QualyraBondingCurve` yang Anda setujui ("lakukan kedua nya"), men
 Test baru: 6 di `contracts/test/QualyraLaunch.t.sol` — event refund muncul saat kelebihan dibalikin,
 tidak muncul saat buy biasa, partial fill sukses + sisa kembali, bound masih menggigit saat partial
 fill, bound = kuantitas saat tanpa clamp, dan bound ekstrem = `SlippageExceeded` (bukan panic).
-Tes lama `test_trade_revertsOnSlippageAndDeadline` (bound `MAX`) tetap harus lulus.
+Tes lama `test_trade_revertsOnSlippageAndDeadline` (bound `MAX`) tetap lulus.
 
-Belum diverifikasi: sandbox tidak bisa menjalankan `forge`. Di mesin Anda: `forge test` → kalau hijau,
-`forge build` + `node scripts/sync-abi.mjs` (**ABI kurva berubah**: event `BuyRefunded` bertambah,
-`contracts/abi/QualyraBondingCurve.json` + `frontend/lib/abis/qualyraBondingCurve.ts` ikut berubah).
-Indexer tidak terpengaruh (log diambil per-event, event baru tidak di-decode). `FEE-AND-BATTLE-SPEC.md`
-belum menyebut refund/bound harga — kandidat tambahan dokumen berikutnya.
+**Status: `forge test` 243/243 di mesin Anda; ABI di-sync (`d9a8f63`) dan di-merge ke `main`
+(`a4bbacb`).** Sinkronisasi ABI diverifikasi ulang secara independen: 9/9 ABI di `contracts/abi/*.json`
++ `frontend/lib/abis/*.ts` identik byte-per-byte dengan hasil kompilasi solc 0.8.26 (optimizer 200,
+cancun) dari source yang ter-commit. Indexer tidak terpengaruh (log diambil per-event; event baru
+tidak di-decode). `FEE-AND-BATTLE-SPEC.md` belum menyebut refund/bound harga — kandidat tambahan
+dokumen berikutnya.
+
+### Batch indexer Q-11 item 2+3 — registry dari factory + fail-closed **[90/90 + tsc bersih]**
+
+Non-Solidity, jadi tidak menyentuh `forge`. Lima perubahan (rincian di §Q-11 "Bagian 1"): replay
+registry factory dari LOG `QuoteAssetSet`/`QuoteAssetDisabled` (`src/quoteAssetRegistry.ts`), provider
+harga registry-gated, fallback ETH di `normalizeQuote` dihapus, `unpricedQuoteAssets` masuk dataset +
+CLI warning + alert operator, snapshot registry di-embed ke `priceBasis`. Konsekuensi disengaja:
+**datasetHash berubah** (model data tumbuh pra-mainnet; **`resultHash` tidak berubah** — terbukti di
+snapshot test). Test: indexer `npm test` **90/90** (75 lama + 15 baru) + `tsc` bersih di dua entry
+closure (CLI + operator service). Batch frontend **Q-9/Q-10** (tema yang sama, "tidak ada angka karangan") **selesai di branch yang
+sama**: Q-9 (fallback $1 → `undefined` → "—", tipe `number | undefined` end-to-end) dan Q-10 (jalur
+`balanceOf` v4 + angka hardcoded dihapus; likuiditas hanya dari Gecko `reserve_in_usd`).
+Verifikasi: `tsc --noEmit` bersih; `next build` di sandbox gagal **hanya** karena Google Fonts tidak
+terjangkau dari sandbox (bukan kode) — build penuh dikonfirmasi di mesin Anda.
 
 ---
 
@@ -339,21 +354,35 @@ dan panggil dari `FeeVault` (hapus perhitungan `launchedAt` lokal).
 
 ### Q-9 — Frontend: fallback $1 untuk simbol tak dikenal **[Rendah — opsional]**
 
-**Bukti.** `frontend/lib/pricing.ts:40` → `return STOCK_FALLBACK_PRICES[sym] ?? 1`.
+> **Status: SELESAI (batch fail-closed frontend).** `getQuoteAssetPriceUsd` kini mengembalikan
+> `undefined` untuk simbol tak dikenal (fallback `?? 1` dihapus); `quoteToUsd` / `usdToQuote`
+> meneruskannya; `formatDualPrice` mencetak `"—"`. Tipe `mcap`/`vol24`/`potUsd`/`usd` ikut
+> `number | undefined` dari `Project` sampai komponen (`SubCentUsd`, `Usd`, `UnsweptNote`,
+> `TournamentHeroBanner`) yang merender **"—"**; total pool menjumlahkan **bagian yang berharga**
+> (`?? 0`, terdokumentasi). `tsc --noEmit` bersih.
+
+**Bukti (asli).** `frontend/lib/pricing.ts:40` → `return STOCK_FALLBACK_PRICES[sym] ?? 1`.
 
 **Dampak.** Untuk simbol yang tidak ada di peta harga, UI menampilkan **$1/unit** — angka palsu yang
 terlihat seperti data nyata. Semua MC, volume, dan hadiah yang ditampilkan ikut salah. Hari ini
 tertutup karena 5 aset tetap sudah ada di peta; celahnya terbuka begitu ada aset baru.
 
-**Saran perbaikan.** Balikkan menjadi *fail-closed*: `?? 0`, dan `quoteToUsd` mengembalikan
-`undefined` saat rate tidak diketahui → UI menampilkan "—" (atau menyembunyikan angka USD), bukan
-angka karangan.
+**Saran perbaikan.** ~~Balikkan menjadi *fail-closed*~~ — **sudah dikerjakan** persis seperti ini
+(lihat status di atas).
 
 ---
 
 ### Q-10 — Frontend: reserve pool diukur dengan cara yang tidak berlaku untuk v4 **[Rendah]**
 
-**Bukti.** `fetchOnchainPoolReserves` (`frontend/app/api/prices/route.ts:195`) memakai
+> **Status: SELESAI (minimal, sesuai saran).** Jalur `fetchOnchainPoolReserves` (`balanceOf` ke
+> alamat pool — tidak valid di v4) **dihapus**, angka hardcoded `pooledBase`/`pooledQuote`
+> (4118060/1121.21 untuk PONS, 8345598/890.39 untuk AI) **dihapus**; tanpa sumber v4 yang valid
+> tidak ada angka reserve sama sekali (UI menampilkan "—", sudah didukung komponennya). Likuiditas
+> kini hanya dari `reserve_in_usd` GeckoTerminal (data nyata yang memang sudah di-fetch); fallback
+> "10%×mcap" dihapus dari jalur live — `liquidity` jadi opsional. Perbaikan penuh versi v4
+> (`StateLibrary.getSlot0` + `getLiquidity`) tetap kandidat lanjutan.
+
+**Bukti (asli).** `fetchOnchainPoolReserves` (`frontend/app/api/prices/route.ts:195`) memakai
 `balanceOf(pool)` lewat `eth_call`. Di Uniswap v4 semua token setiap pool disimpan di
 **PoolManager singleton**, jadi saldo di alamat pool = 0 → fungsi mengembalikan `null` → kode jatuh
 ke angka **hardcoded** (`pooledBase = 4118060` untuk PONS, `8345598` untuk AI, `pooledQuote =
@@ -362,16 +391,15 @@ ke angka **hardcoded** (`pooledBase = 4118060` untuk PONS, `8345598` untuk AI, `
 **Dampak.** Data kedalaman pool di UI tidak dapat dipercaya (angka tetap dari kode, ditampilkan
 seolah reserve nyata).
 
-**Saran perbaikan.** Untuk v4, ukuran yang benar adalah likuiditas posisi:
-`StateLibrary.getSlot0(poolId)` + `getLiquidity(poolId)` → nilai ≈ `2 × L × √P` (atau pakai
-`reserve_in_usd` GeckoTerminal). Minimal: hapus jalur `balanceOf` + angka hardcoded supaya UI tidak
-menampilkan reserve palsu.
+**Saran perbaikan.** ~~Minimal: hapus jalur `balanceOf` + angka hardcoded~~ — **sudah dikerjakan**
+(lihat status). Sisanya tetap terbuka sebagai kandidat: likuiditas posisi v4
+(`StateLibrary.getSlot0(poolId)` + `getLiquidity(poolId)` → nilai ≈ `2 × L × √P`).
 
 ---
 
 ### Q-11 — Indexer: `PAIR_ASSETS` hardcoded **[Rendah — opsional]**
 
-> **Status: item 1 (jalur `Swapped`) SELESAI** — lihat "Bagian 0" di bawah. Item 2 & 3 masih terbuka.
+> **Status: SELESAI — ketiga item (1, 2, 3).** Item 1: "Bagian 0". Item 2 & 3 (registry dari factory + fail-closed): "Bagian 1".
 
 **Bagian 0 — bug turunan yang ditemukan saat menulis Q-11 (SUDAH DIPERBAIKI).**
 `Swapped` — event trade pool pasca-graduasi dari `QualyraSwapRouter` (`:37-44`, `:111`) — **tidak
@@ -387,8 +415,32 @@ benar setelahnya akan menghasilkan hash yang berbeda dari yang tersimpan on-chai
 catatan launch** milik token itu (`TokenLaunched` → `token → quoteAsset`, helper `tokenQuoteMap`),
 sumber yang sama yang sudah dipakai jalur curve (`Bought`/`Sold` lewat alamat curve). Graduation
 memakai pair yang sama dengan launch, jadi pair asset sebuah token tidak pernah berubah. Token yang
-tidak dikenal tetap **dilewati**, bukan ditebak harganya. Test: `indexer/test/ingestNormalize.test.mjs`
-(9 test, termasuk bukti volume pool akhirnya masuk QV).
+tidak dikenal tetap **dilewati**, bukan ditebak harganya. Test: `indexer/test/ingestNormalize.test.mjs`.
+
+**Bagian 1 — item 2+3: registry dari factory + fail-closed penuh (SUDAH DIPERBAIKI).**
+Root cause item 2: desimal & keberadaan aset pair hidup **hanya** di `PAIR_ASSETS` hardcoded
+(`config.ts`) — aset baru dari `setQuoteAsset` tidak terlihat, dan salah desimal = QV salah **senyap**.
+Root cause item 3: jalur curve (`normalizeQuote`) memetakan aset tak dikenal ke `address(0)` —
+**dihargai sebagai ETH**, angka karangan yang ikut ter-hash. Perbaikan (non-Solidity, 5 perubahan):
+
+1. **Registry dari LOG factory** — `src/quoteAssetRegistry.ts` mereplay `QuoteAssetSet` /
+   `QuoteAssetDisabled` dalam range pinned `[deployBlock, toBlock]` (logs saja, tanpa `eth_call`
+   historis — filosofi yang sama dengan harga on-chain, jadi reproduksibel di RPC non-archive).
+   Factory adalah source of truth yang **terverifikasi on-chain** (`setQuoteAsset` revert bila
+   `decimals()` token tidak cocok).
+2. **Provider harga registry-gated** — desimal & eksistensi dari registry, config hanya sebagai basis
+   USD (ETH via pool on-chain, USDG $1, RWA konstanta env). Aset terdaftar **tanpa basis harga** →
+   unpriced (0 QV), tidak pernah ditebak.
+3. **Fallback ETH dihapus** — `normalizeQuote` tidak ada lagi; kedua pasar konsisten: aset tak
+   dikenal/disabled → trade di-skip.
+4. **Fail-closed terlihat** — `unpricedQuoteAssets` masuk dataset (ikut `datasetHash`), CLI memperingatkan
+   keras, operator service meng-alert sebelum commit.
+5. **Snapshot registry di-embed** — `priceBasis.registry` mengunci state registry yang dipakai.
+
+Konsekuensi disengaja: bentuk dataset berubah (`priceBasis.registry` + `unpricedQuoteAssets`) →
+**datasetHash berubah** (pra-mainnet; `resultHash` TIDAK berubah — terbukti di snapshot test).
+Test: `quoteAssetRegistry.test.mjs` (replay), `ingestNormalize.test.mjs` + `determinism.test.mjs`
+(fail-closed) — **90/90 + tsc bersih**.
 
 **Bukti (asli).** `indexer/src/config.ts:177` mendaftar ETH/USDG/NVDA/AAPL/SPY beserta harga USD-nya.
 Token dengan aset pair di luar daftar itu tidak dapat basis USD → tidak bisa dihitung Qualified
@@ -402,11 +454,11 @@ menolaknya (`0n`). Keduanya senyap.
 
 **Saran perbaikan (sisa).**
 1. ~~Resolve pair asset trade pool dari catatan launch~~ — **selesai** (di atas).
-2. Baca daftar pair dari factory (`quoteAssetCount`/`quoteAssetAt`/`quoteAssetConfig`), bukan alamat
-   yang ditulis tangan. Harga tetap konstanta env-overridable — itu disengaja untuk reproducibility
-   (`ConstantPriceProvider.snapshot()` ikut masuk `datasetHash`).
-3. **Fail-closed**: aset tanpa basis USD ditandai "dikecualikan" secara eksplisit, `normalizeQuote`
-   berhenti memetakan aset tak dikenal ke ETH, dan UI/leaderboard menampilkan "—" (lihat Q-9).
+2. ~~Baca daftar pair dari factory~~ — **selesai** ("Bagian 1"): registry direkonstruksi dari LOG
+   `QuoteAssetSet`/`QuoteAssetDisabled` pada blok pinned (logs saja, reproduksibel).
+3. ~~**Fail-closed**~~ — **selesai** ("Bagian 1" + **Q-9** untuk sisi UI "—"): aset tanpa basis USD
+   tercatat di `unpricedQuoteAssets` (0 QV), `normalizeQuote` dihapus, CLI/operator memperingatkan
+   keras.
 
 ---
 

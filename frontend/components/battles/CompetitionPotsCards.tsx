@@ -56,7 +56,7 @@ function Amounts({ pools }: { pools: PotAmount[] }) {
   )
 }
 
-function Usd({ amount }: { amount: number }) {
+function Usd({ amount }: { amount: number | undefined }) {
   return (
     <div style={{ fontSize: '11px', color: 'var(--dim)', marginTop: '2px' }}>
       <SubCentUsd amount={amount} prefix="$" />
@@ -109,8 +109,8 @@ function Countdown({ endTime, done }: { endTime: number; done?: string }) {
 }
 
 /** Says how much of a balance is still in the pool hook. Renders nothing when all of it has been swept. */
-function UnsweptNote({ usd, where }: { usd: number; where: string }) {
-  if (usd <= 0) return null
+function UnsweptNote({ usd, where }: { usd: number | undefined; where: string }) {
+  if (usd === undefined || usd <= 0) return null
   return (
     <p style={note}>
       Includes <SubCentUsd amount={usd} prefix="$" /> the pool hook still holds. {where}

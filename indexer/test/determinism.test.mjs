@@ -23,6 +23,7 @@ import assert from "node:assert/strict";
 import { buildBattle, buildWeek } from "../src/build.ts";
 import { computeScore } from "../src/score.ts";
 import { canonical, hash } from "../src/canonical.ts";
+import { ConstantPriceProvider } from "../src/price/ConstantPriceProvider.ts";
 import { OUTCOME, PAIR_ASSETS, ADDRESSES } from "../src/config.ts";
 
 /* ------------------------------------------------------------------ */
@@ -99,6 +100,22 @@ const creators = { [TOKEN_A]: CREATOR_A, [TOKEN_B]: CREATOR_B };
 const denylist = new Set([DENYLISTED]);
 const ex = () => ({ creators, denylist });
 
+const ETH = PAIR_ASSETS.ETH.address.toLowerCase(); // 18 decimals
+const TSLA = "0x000000000000000000000000000000000000751a"; // listed on-chain, NO USD basis here
+
+/**
+ * The factory's quote-asset registry as of this fixture's pin (as the live
+ * path reconstructs it from factory logs — jobs.ts): the source of truth for
+ * existence + decimals. TSLA is listed+enabled but has no USD basis anywhere.
+ */
+const REGISTRY = {
+  [ETH]: { decimals: 18, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 1n },
+  [USDG]: { decimals: 6, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 1n },
+  [TSLA]: { decimals: 18, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 1n },
+};
+/** The live-path provider: registry-gated, registry-scaled (see jobs.ts). */
+const PRICES = new ConstantPriceProvider(REGISTRY);
+
 /* ------------------------------------------------------------------ */
 /* Snapshot hashes (computed once, then hard-coded for drift detection)*/
 /* ------------------------------------------------------------------ */
@@ -107,13 +124,17 @@ const ex = () => ({ creators, denylist });
 // (the pinned USD price snapshot) was added to the dataset. This is an
 // intentional, legitimate change to the data model — the *ResultHash values
 // (which do not embed priceBasis) are unchanged, confirming nothing else moved.
+// NOTE 2: they changed again on 2026-09-26 when the Q-11 fail-closed batch
+// added `priceBasis.registry` (the factory registry replay at the pin) and
+// `unpricedQuoteAssets` to the dataset. Same deal: the data model grew; the
+// *ResultHash values (which embed neither) are unchanged.
 const SNAPSHOT = {
   battleDatasetHash:
-    "0x0f1e3a34a62850ad21bf9c0d3ff9ef5da3ce423ab3b0cc40d394148c4c78d3a1",
+    "0x12859da860f0463c444801ef7ff8c316dcc6921d64c85448e2c545f1d503fbe0",
   battleResultHash:
     "0x5f49c3667121354a71daa91f11616fcf8fc4873e6b9910ff95c9b9f717decab2",
   weekDatasetHash:
-    "0x0f1e3a34a62850ad21bf9c0d3ff9ef5da3ce423ab3b0cc40d394148c4c78d3a1",
+    "0x12859da860f0463c444801ef7ff8c316dcc6921d64c85448e2c545f1d503fbe0",
   weekResultHash:
     "0xfdbee9f78297fb755da7913d6aa1eb2ca83fe3a846d0009cde598a7915075f86",
 };
@@ -123,8 +144,8 @@ const SNAPSHOT = {
 /* ------------------------------------------------------------------ */
 
 test("battle pipeline is deterministic across two runs", () => {
-  const run1 = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex());
-  const run2 = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex());
+  const run1 = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex(), undefined, PRICES);
+  const run2 = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex(), undefined, PRICES);
 
   const c1 = canonical(run1.dataset);
   const c2 = canonical(run2.dataset);
@@ -139,7 +160,7 @@ test("battle pipeline is deterministic across two runs", () => {
 });
 
 test("exclusions remove creator / denylist / buyback / below-min trades", () => {
-  const b = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex());
+  const b = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex(), undefined, PRICES);
   const traders = new Set(b.dataset.trades.map((t) => t.trader));
   assert.ok(!traders.has(CREATOR_A), "creator A excluded");
   assert.ok(!traders.has(CREATOR_B), "creator B excluded");
@@ -155,7 +176,7 @@ test("exclusions remove creator / denylist / buyback / below-min trades", () => 
 });
 
 test("trades are ordered by (block, txIndex, logIndex)", () => {
-  const b = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex());
+  const b = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex(), undefined, PRICES);
   const ts = b.dataset.trades;
   for (let i = 1; i < ts.length; i++) {
     const prev = ts[i - 1];
@@ -210,7 +231,7 @@ test("outcome mapping honors the 1% (1e16) draw margin", () => {
 });
 
 test("week leaderboard ranks by QV desc, tie-break addr asc, pads winners", () => {
-  const w = buildWeek(2900n, makeTrades(), ex());
+  const w = buildWeek(2900n, makeTrades(), ex(), undefined, PRICES);
   // Wallet totals (USD): W1 = 100 (A) + 40 (B) = 140; W2=50; W3=30; W4=20.
   const ranking = w.result.ranking;
   assert.equal(ranking[0].wallet, W1, "W1 top by QV");
@@ -223,7 +244,7 @@ test("week leaderboard ranks by QV desc, tie-break addr asc, pads winners", () =
 
 test("winners are zero-padded when fewer than 5 wallets qualify", () => {
   const only = [trade(TOKEN_A, W1, 100, "buy")];
-  const w = buildWeek(2900n, only, { creators, denylist });
+  const w = buildWeek(2900n, only, { creators, denylist }, undefined, PRICES);
   assert.equal(w.result.winners.length, 5);
   assert.equal(w.result.winners[0], W1);
   assert.equal(
@@ -233,8 +254,8 @@ test("winners are zero-padded when fewer than 5 wallets qualify", () => {
 });
 
 test("snapshot hashes are stable (drift detection)", () => {
-  const b = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex());
-  const w = buildWeek(2900n, makeTrades(), ex());
+  const b = buildBattle("1", TOKEN_A, TOKEN_B, makeTrades(), ex(), undefined, PRICES);
+  const w = buildWeek(2900n, makeTrades(), ex(), undefined, PRICES);
 
   const current = {
     battleDatasetHash: b.datasetHash,
@@ -253,3 +274,32 @@ test("snapshot hashes are stable (drift detection)", () => {
   assert.equal(w.datasetHash, SNAPSHOT.weekDatasetHash, "week dataset hash drift");
   assert.equal(w.resultHash, SNAPSHOT.weekResultHash, "week result hash drift");
 });
+
+test("a listed-but-unpriced pair asset is 0 QV and REPORTED in the dataset (fail-closed)", () => {
+  // TSLA is listed+enabled in the registry but has NO USD basis anywhere: its
+  // volume must count as 0 QV AND be surfaced — never silently priced, never
+  // silently dropped from view (ISSUE-LIST Q-11 items 2-3).
+  const t = {
+    token: TOKEN_A,
+    trader: W2,
+    quoteAsset: TSLA,
+    notionalQuote: 10n * 10n ** 18n, // 10 TSLA (18 decimals, from the registry)
+    side: "buy",
+    blockNumber: 500n,
+    txIndex: 0,
+    logIndex: 0,
+    txHash: "0x" + "e".repeat(64),
+  };
+  const b = buildBattle("1", TOKEN_A, TOKEN_B, [...makeTrades(), t], ex(), undefined, PRICES);
+  assert.deepEqual(b.dataset.unpricedQuoteAssets, [TSLA], "the unpriced asset is surfaced, not silent");
+  assert.ok(
+    !b.dataset.trades.some((x) => x.quoteAsset === TSLA),
+    "the unpriced trade contributes no QV row (priced at 0 < $1 min)",
+  );
+  // W2's priced volume on A is still exactly its $50 USDG trade.
+  assert.equal(
+    b.dataset.trades.filter((x) => x.trader === W2 && x.token === TOKEN_A).length,
+    1,
+  );
+});
+

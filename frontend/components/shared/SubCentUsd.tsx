@@ -4,7 +4,8 @@ import React from 'react'
 import { splitSubCentUsd } from '@/lib/formatters'
 
 export interface SubCentUsdProps {
-  amount: number
+  /** Undefined means "no USD price basis" — the component renders "—" (Q-9). */
+  amount: number | undefined
   prefix?: string
   suffix?: string
   className?: string
@@ -31,6 +32,13 @@ export function SubCentUsd({
   subStyle,
   maxSubCents = 2,
 }: SubCentUsdProps) {
+  if (amount === undefined) {
+    return (
+      <span className={className} style={style}>
+        —
+      </span>
+    )
+  }
   const parts = splitSubCentUsd(amount, maxSubCents)
 
   return (

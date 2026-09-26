@@ -368,7 +368,7 @@ export function executeTrade(params: ExecuteTradeParams): TradeFill {
       raised: newRaised,
       progress: newProgress,
       holders: side === 'BUY' ? project.holders + 1 : project.holders,
-      vol24: Math.round(project.vol24 + quoteAmount * 3200),
+      vol24: Math.round((project.vol24 ?? 0) + quoteAmount * 3200),
       status: newProgress >= 100 ? 'graduated' : 'bonding',
     }
     saveCustomProject(updatedProject)

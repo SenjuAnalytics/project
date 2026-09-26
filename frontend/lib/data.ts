@@ -5,12 +5,14 @@ export interface Project {
   desc: string
   creator: string
   price: number
-  mcap: number
+  /** Undefined when the pair asset has no USD price — rendered as "—", never a fabricated figure. */
+  mcap: number | undefined
   raised: number
   goal: number
   progress: number
   holders: number
-  vol24: number
+  /** Undefined when the pair asset has no USD price — rendered as "—". */
+  vol24: number | undefined
   raw: number
   ret: string
   chg: number

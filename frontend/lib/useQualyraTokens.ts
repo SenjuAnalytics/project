@@ -394,7 +394,7 @@ export function useQualyraTokens(): QualyraTokens {
         price,
         // Fixed 1B supply, so market cap follows the curve price directly. The price is in the pair
         // asset, so it has to be converted before it can carry a dollar sign anywhere.
-        mcap: quoteToUsd(price * 1_000_000_000, quoteSymbol) ?? price * 1_000_000_000,
+        mcap: quoteToUsd(price * 1_000_000_000, quoteSymbol),
         raised,
         goal,
         progress,

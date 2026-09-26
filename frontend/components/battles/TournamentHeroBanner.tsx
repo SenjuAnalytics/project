@@ -5,7 +5,7 @@ import { SubCentUsd } from '@/components/shared/SubCentUsd'
 
 interface TournamentHeroBannerProps {
   /** Pots of battles not yet finalized, in USD. */
-  potUsd: number
+  potUsd: number | undefined
   /** The same pots per pair asset, e.g. "0.12 ETH, 40 USDG". */
   nativeBreakdown?: string
   openCount: number

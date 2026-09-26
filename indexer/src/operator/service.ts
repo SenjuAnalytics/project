@@ -242,6 +242,29 @@ async function dailySweep(ctx: ServiceContext, snap: Snapshot, tokens: () => Pro
   ctx.state.lastSweepDay = Math.floor(snap.now / DAY);
 }
 
+/**
+ * Fail-closed visibility for the operator (ISSUE-LIST Q-11 items 2-3): a quote
+ * asset that traded but has no USD price basis counted as 0 QV in the
+ * commitment we are about to post. Alert so the ops runbook can decide whether
+ * to add a price basis and veto — before the hash becomes final.
+ */
+async function alertUnpriced(
+  ctx: ServiceContext,
+  kind: string,
+  id: string,
+  dataset: { unpricedQuoteAssets?: string[] },
+): Promise<void> {
+  const u = dataset.unpricedQuoteAssets ?? [];
+  if (u.length === 0) return;
+  await alert(
+    ctx.state,
+    ctx.env.alertWebhookUrl,
+    `unpriced:${kind}:${id}:${u.join(",")}`,
+    `${kind} ${id}: ${u.length} quote asset(s) traded but had NO USD price basis -> counted as 0 QV: ` +
+      `${u.join(", ")}. Add a price basis (pool or INDEXER_PRICE_*) if it should count.`,
+  );
+}
+
 async function operatorPass(ctx: ServiceContext, snap: Snapshot, tokens: () => Promise<TokenState[]>): Promise<void> {
   if (snap.paused) {
     console.log("[operator] the vault is paused: results and bookings wait.");
@@ -258,6 +281,7 @@ async function operatorPass(ctx: ServiceContext, snap: Snapshot, tokens: () => P
       }
       const { result, dataset, datasetHash, resultHash } = job.build;
       writeOutputs(`battle-${b.id}`, dataset, result, datasetHash, resultHash);
+      await alertUnpriced(ctx, "battle", `#${b.id}`, dataset);
       const posted = await send(ctx, "operator", `post the result of battle #${b.id} (${OUTCOME_NAMES[result.outcome]})`, {
         address: vault, abi: QualyraCompetitionVaultAbi, functionName: "proposeBattleResult",
         args: [BigInt(b.id), result.outcome, result.scoreA, result.scoreB, datasetHash, resultHash],
@@ -275,6 +299,7 @@ async function operatorPass(ctx: ServiceContext, snap: Snapshot, tokens: () => P
       }
       const { result, dataset, datasetHash, resultHash } = job.build;
       writeOutputs(`week-${w.week}`, dataset, result, datasetHash, resultHash);
+      await alertUnpriced(ctx, "week", w.week.toString(), dataset);
       const posted = await send(ctx, "operator", `post the winners of league week ${w.week}`, {
         address: vault, abi: QualyraCompetitionVaultAbi, functionName: "proposeWeeklyWinners",
         args: [BigInt(w.week), result.winners, datasetHash, resultHash],

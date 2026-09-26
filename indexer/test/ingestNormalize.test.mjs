@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import { normalizeLogs, tokenQuoteMap } from "../src/ingest.ts";
 import { computeQualifiedVolume } from "../src/qualifiedVolume.ts";
 import { ConstantPriceProvider } from "../src/price/ConstantPriceProvider.ts";
+import { buildBattle } from "../src/build.ts";
 import { PAIR_ASSETS } from "../src/config.ts";
 
 const PRICES = new ConstantPriceProvider();
@@ -40,6 +41,33 @@ const TOKEN_A = "0x000000000000000000000000000000000000aaaa"; // USDG pair
 const TOKEN_B = "0x000000000000000000000000000000000000bbbb"; // ETH pair
 const TOKEN_X = "0x000000000000000000000000000000000000cccc"; // never launched
 
+// Pair assets covering the fail-closed cases (ISSUE-LIST Q-11 items 2-3):
+const TSLA = "0x000000000000000000000000000000000000751a"; // listed on-chain, but NO USD basis anywhere
+const DSGD = "0x000000000000000000000000000000000000d5a6"; // set, then DISABLED at the pin
+const MYST = "0x000000000000000000000000000000000000b00b"; // never registered at all
+
+const CURVE_T = "0x000000000000000000000000000000000000c0e0"; // TSLA pair
+const CURVE_D = "0x000000000000000000000000000000000000c0e1"; // DSGD pair
+const CURVE_M = "0x000000000000000000000000000000000000c0e2"; // MYST pair
+const TOKEN_T = "0x000000000000000000000000000000000000d0d0";
+const TOKEN_D = "0x000000000000000000000000000000000000d1d1";
+const TOKEN_M = "0x000000000000000000000000000000000000d2d2";
+
+/**
+ * The factory's quote-asset registry at the pin, as reconstructed replaying its
+ * QuoteAssetSet / QuoteAssetDisabled logs (the replay itself is tested in
+ * quoteAssetRegistry.test.mjs). This is the gate the live path always supplies
+ * (jobs.ts): existence + decimals come from here, the USD basis from config.
+ */
+const REGISTRY = {
+  [ETH]: { decimals: 18, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 1n },
+  [USDG]: { decimals: 6, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 1n },
+  [TSLA]: { decimals: 18, enabled: true, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 1n },
+  [DSGD]: { decimals: 6, enabled: false, phantomQuote: 0n, graduationThreshold: 0n, lastEventBlock: 2n },
+};
+/** Registry-gated provider: the live-path shape (see jobs.ts). */
+const PRICES_REG = new ConstantPriceProvider(REGISTRY);
+
 const ALICE = "0x0000000000000000000000000000000000001111";
 const BOB = "0x0000000000000000000000000000000000002222";
 
@@ -47,6 +75,9 @@ const BOB = "0x0000000000000000000000000000000000002222";
 const curveMap = {
   [CURVE_A]: { token: TOKEN_A, quoteAsset: USDG },
   [CURVE_B]: { token: TOKEN_B, quoteAsset: ETH },
+  [CURVE_T]: { token: TOKEN_T, quoteAsset: TSLA },
+  [CURVE_D]: { token: TOKEN_D, quoteAsset: DSGD },
+  [CURVE_M]: { token: TOKEN_M, quoteAsset: MYST },
 };
 
 let seq = 0;
@@ -86,7 +117,8 @@ function bought(curve, payer, { amount, block = 100, txIndex = 0, logIndex = 0 }
   };
 }
 
-const norm = (partial) => normalizeLogs({ swapped: [], bought: [], sold: [], ...partial, curveMap });
+const norm = (partial) =>
+  normalizeLogs({ swapped: [], bought: [], sold: [], ...partial, curveMap, registry: REGISTRY });
 
 test("pool trade prices in the token's launch pair asset (regression: was empty)", () => {
   const trades = norm({ swapped: [swapped(TOKEN_A, ALICE, { amount: 5_000_000 })] });
@@ -177,3 +209,50 @@ test("tokenQuoteMap inverts the curve map without losing tokens", () => {
   assert.equal(byToken[TOKEN_A], USDG);
   assert.equal(byToken[TOKEN_B], ETH);
 });
+
+test("a curve trade on a pair asset that is NOT in the registry is skipped — never re-priced as ETH", () => {
+  // MYST has no registry entry at all. Before Q-11 item 3 this trade was
+  // silently priced as ETH (normalizeQuote's fallback), crediting
+  // ETH-denominated volume the wallet never had.
+  const trades = norm({ bought: [bought(CURVE_M, ALICE, { amount: 10n ** 18n })] });
+  assert.equal(trades.length, 0, "unknown pair asset -> skipped, like the pool path");
+});
+
+test("a curve trade on a pair asset DISABLED at the pin is skipped", () => {
+  const trades = norm({ bought: [bought(CURVE_D, ALICE, { amount: 5_000_000 })] });
+  assert.equal(trades.length, 0);
+});
+
+test("a pool trade on a pair asset DISABLED at the pin is skipped (both markets agree)", () => {
+  // TOKEN_D's launch pair asset is DSGD, which the registry says is disabled.
+  const trades = norm({ swapped: [swapped(TOKEN_D, ALICE, { amount: 5_000_000 })] });
+  assert.equal(trades.length, 0);
+});
+
+test("no registry supplied -> normalization is ungated (offline default)", () => {
+  const trades = normalizeLogs({
+    swapped: [],
+    bought: [bought(CURVE_M, ALICE, { amount: 10n ** 18n })],
+    sold: [],
+    curveMap,
+  });
+  assert.equal(trades.length, 1);
+  assert.equal(trades[0].quoteAsset, MYST, "kept verbatim — the ETH re-pricing fallback is gone everywhere");
+});
+
+test("a listed-but-unpriced pair asset keeps its trades, contributes 0 QV, and is REPORTED in the dataset", () => {
+  // TSLA is listed+enabled on-chain, so the trade survives normalization; but
+  // no USD basis is configured for it, so it must count as 0 QV — loudly, via
+  // unpricedQuoteAssets, never via a fabricated price.
+  const trades = norm({ bought: [bought(CURVE_T, ALICE, { amount: 5n * 10n ** 18n })] });
+  assert.equal(trades.length, 1);
+  assert.equal(trades[0].quoteAsset, TSLA, "kept as its true pair asset");
+
+  const qv = computeQualifiedVolume(trades, NO_EXCLUSIONS, PRICES_REG);
+  assert.equal(qv.perTokenWalletQv[TOKEN_T]?.[ALICE] ?? 0n, 0n, "0 QV — no price basis");
+  assert.equal(qv.filteredTrades.length, 0, "priced at 0 -> below the $1 min-trade filter");
+
+  const build = buildBattle("9", TOKEN_T, TOKEN_A, trades, NO_EXCLUSIONS, undefined, PRICES_REG);
+  assert.deepEqual(build.dataset.unpricedQuoteAssets, [TSLA], "the unpriced asset is surfaced, not silent");
+});
+

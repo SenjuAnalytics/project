@@ -333,7 +333,7 @@ export function CreatedTokensTab({
                         balance: 100000000,
                         isProfit: proj.chg >= 0,
                         pnlPct: Math.abs(proj.chg),
-                        pnlUsd: Math.round(proj.vol24 * 0.1),
+                        pnlUsd: Math.round((proj.vol24 ?? 0) * 0.1),
                         quoteAsset: proj.quoteAsset || 'ETH',
                       })
                     }}
